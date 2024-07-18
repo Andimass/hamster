@@ -1,0 +1,15 @@
+{
+    "index": 186,
+    "divergences": {
+        "bullish": [
+            "stoch_d",
+            "obv",
+            "macd"
+        ],
+        "bearish": [
+            "rsi",
+            "stoch_k",
+            "macdhist"
+        ]
+    }
+}

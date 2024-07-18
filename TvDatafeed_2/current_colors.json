@@ -1,0 +1,18 @@
+{
+    "Interval.in_1_hour": {
+        "last_close_price": 64730.0,
+        "last_hull_value": 64564.99363974782
+    },
+    "Interval.in_2_hour": {
+        "last_close_price": 64730.0,
+        "last_hull_value": 65461.64437397787
+    },
+    "Interval.in_4_hour": {
+        "last_close_price": 64738.0,
+        "last_hull_value": 66106.40342445715
+    },
+    "Interval.in_daily": {
+        "last_close_price": 64730.0,
+        "last_hull_value": 57616.44413144196
+    }
+}

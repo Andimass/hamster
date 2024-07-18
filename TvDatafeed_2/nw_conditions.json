@@ -1,0 +1,26 @@
+{
+    "Interval.in_1_hour": {
+        "is_above_upper_high": false,
+        "is_above_upper_close": false,
+        "is_below_lower_low": false,
+        "is_below_lower_close": false
+    },
+    "Interval.in_2_hour": {
+        "is_above_upper_high": false,
+        "is_above_upper_close": false,
+        "is_below_lower_low": false,
+        "is_below_lower_close": false
+    },
+    "Interval.in_4_hour": {
+        "is_above_upper_high": false,
+        "is_above_upper_close": false,
+        "is_below_lower_low": false,
+        "is_below_lower_close": false
+    },
+    "Interval.in_daily": {
+        "is_above_upper_high": true,
+        "is_above_upper_close": true,
+        "is_below_lower_low": false,
+        "is_below_lower_close": false
+    }
+}

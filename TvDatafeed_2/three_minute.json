@@ -1,0 +1,23 @@
+[
+    {
+        "symbol": "BTCUSDT",
+        "exchange": "BINANCE",
+        "highs_after_hh": [],
+        "lows_after_ll": []
+    },
+    {
+        "symbol": "ETHUSDT",
+        "exchange": "BINANCE",
+        "highs_after_hh": [
+            {
+                "index": 1008,
+                "low": 3457.28,
+                "point_vhod": 3458.82,
+                "point_liqvidation": 3517.0,
+                "rr": 0.622,
+                "rr_max": 1.276
+            }
+        ],
+        "lows_after_ll": []
+    }
+]

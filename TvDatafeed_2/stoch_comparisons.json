@@ -1,0 +1,11 @@
+{
+    "%K > %D in Interval.in_15_minute": true,
+    "%K > %D in Interval.in_30_minute": true,
+    "%K > %D in Interval.in_1_hour": false,
+    "%K > %D in Interval.in_2_hour": true,
+    "%K > %D in Interval.in_4_hour": false,
+    "last_values": {
+        "last_k": 67.03179923158653,
+        "last_d": 67.46723343960299
+    }
+}

@@ -1,0 +1,44 @@
+{
+    "in_1_hour": {
+        "index": 190,
+        "divergences": {
+            "bullish": [],
+            "bearish": [
+                "macd"
+            ]
+        }
+    },
+    "in_2_hour": {
+        "index": 182,
+        "divergences": {
+            "bullish": [],
+            "bearish": [
+                "macd",
+                "stoch_k",
+                "rsi",
+                "stoch_d"
+            ]
+        }
+    },
+    "in_4_hour": {
+        "index": 191,
+        "divergences": {
+            "bullish": [],
+            "bearish": [
+                "macdhist",
+                "stoch_k",
+                "rsi"
+            ]
+        }
+    },
+    "in_daily": {
+        "index": 186,
+        "divergences": {
+            "bullish": [
+                "macdhist",
+                "stoch_d"
+            ],
+            "bearish": []
+        }
+    }
+}
