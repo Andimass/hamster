@@ -10,14 +10,31 @@
         "exchange": "BINANCE",
         "highs_after_hh": [
             {
-                "index": 1008,
-                "low": 3457.28,
-                "point_vhod": 3458.82,
-                "point_liqvidation": 3517.0,
-                "rr": 0.622,
-                "rr_max": 1.276
+                "index": 761,
+                "low": 2684.15,
+                "point_vhod": 2684.47,
+                "point_liqvidation": 2670.0,
+                "rr": -5.585,
+                "rr_max": -0.975
             }
         ],
-        "lows_after_ll": []
+        "lows_after_ll": [
+            {
+                "index": 1001,
+                "high": 2585.57,
+                "point_vhod": 2585.57,
+                "point_liqvidation": 2540.0,
+                "rr": 0.749,
+                "rr_max": 0.749
+            },
+            {
+                "index": 1213,
+                "high": 2588.84,
+                "point_vhod": 2588.84,
+                "point_liqvidation": 2510.05,
+                "rr": 0.753,
+                "rr_max": 0.753
+            }
+        ]
     }
 ]

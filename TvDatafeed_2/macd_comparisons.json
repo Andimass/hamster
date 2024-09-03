@@ -1,7 +1,7 @@
 {
     "MACD > Signal in 15": false,
     "MACD > Signal in 30": false,
-    "MACD > Signal in 1H": true,
-    "MACD > Signal in 2H": false,
-    "MACD > Signal in 4H": false
+    "MACD > Signal in 1H": false,
+    "MACD > Signal in 2H": true,
+    "MACD > Signal in 4H": true
 }

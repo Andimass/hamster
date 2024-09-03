@@ -2,41 +2,42 @@
     "in_1_hour": {
         "index": 190,
         "divergences": {
-            "bullish": [],
-            "bearish": [
-                "macd"
-            ]
+            "bullish": [
+                "macdhist",
+                "stoch_d"
+            ],
+            "bearish": []
         }
     },
     "in_2_hour": {
-        "index": 182,
+        "index": 193,
         "divergences": {
-            "bullish": [],
+            "bullish": [
+                "obv"
+            ],
             "bearish": [
+                "stoch_d",
                 "macd",
-                "stoch_k",
                 "rsi",
-                "stoch_d"
+                "macdhist",
+                "stoch_k"
             ]
         }
     },
     "in_4_hour": {
-        "index": 191,
+        "index": 189,
         "divergences": {
             "bullish": [],
             "bearish": [
-                "macdhist",
-                "stoch_k",
-                "rsi"
+                "stoch_k"
             ]
         }
     },
     "in_daily": {
-        "index": 186,
+        "index": 194,
         "divergences": {
             "bullish": [
-                "macdhist",
-                "stoch_d"
+                "stoch_k"
             ],
             "bearish": []
         }

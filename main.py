@@ -8,21 +8,13 @@ import schedule
 import threading
 from datetime import datetime
 from threading import Timer
+from collections import defaultdict
 
 # bot = telebot.TeleBot("6331788018:AAGFRq3ScUv3OCw5TQPxCI_15K2vy-wnTL8")
 bot = telebot.TeleBot("7379631512:AAE-k1Cy_lctHWhxnLQZFc3rV4d6RspzSlY")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-def load_data():
-    try:
-        with open('tvDatafeed/super_tochka.json', 'r', encoding='utf-8') as file:
-            data = json.load(file)
-            return data
-    except Exception as e:
-        logger.error(f"Ошибка загрузки файла: {e}")
-        return []
 
 def load_color_data():
     # Загружаем данные из JSON файла
@@ -84,9 +76,6 @@ def load_gauss_data():
 
 subscribers = set()
 
-super_tochka_data = load_data()
-current_data = super_tochka_data
-
 def save_subscribers():
     try:
         with open('subscribers.txt', 'w') as file:
@@ -120,15 +109,6 @@ def stop(message):
     save_subscribers()
     bot.send_message(message.chat.id, "Вы отписаны от уведомлений.")
     bot.send_message(message.chat.id, f"Текущие подписчики: {subscribers}")
-
-@bot.message_handler(commands=['getdata'])
-def send_data(message):
-    data = load_data()  # Загрузка данных
-    for coin_data in data:
-        symbol = coin_data.get('symbol', 'Unknown symbol')
-        exchange = coin_data.get('exchange', 'Unknown exchange')
-        process_data_entries(coin_data.get('data', []), message.chat.id, symbol, exchange, "Шорт")
-        process_data_entries(coin_data.get('data_ll', []), message.chat.id, symbol, exchange, "Лонг")
 
 @bot.message_handler(commands=['getdata2'])
 def send_data_2(message):
@@ -214,14 +194,6 @@ def notify_subscribers_about_target_value(data, subscribers):
                 for chat_id in subscribers:
                     process_data_entries(prepared_data, chat_id, symbol, exchange, direction)
 
-def check_updates():
-    global current_data
-    new_data = load_data()
-    notify_subscribers_about_target_value(new_data, subscribers)
-    current_data = new_data
-    logger.info(f"Текущие подписчики: {subscribers}")
-
-
 def continuous_rsi_check():
     previous_short_result = ""
     previous_long_result = ""
@@ -254,12 +226,16 @@ def check_gauss(message):
     for timeframe, values in hull_data.items():
         last_close = values["last_close_price"]
         last_hull = values["last_hull_value"]
+        last_1_percent = last_hull/350
 
         # Сравниваем закрытие с Hull MA
-        if last_close > last_hull:
+        if (last_close > last_hull) and (last_close - last_hull >= last_1_percent):
             result += "✅"
-        else:
+        elif (last_close < last_hull) and (-(last_close - last_hull) >= last_1_percent):
             result += "❌"
+        elif last_close - last_hull <= last_1_percent:
+            result += "↕️"
+
 
     # Отправка результатов
     bot.send_message(message.chat.id, f"TREND: {result}")
@@ -383,16 +359,32 @@ def check_gauss(message):
     bot.send_message(message.chat.id, result)
 
     try:
-        with open('TvDatafeed_2/divergences_per_timeframe.json', 'r', encoding='utf-8') as file:
+        with open('TvDatafeed_2/divergences.json', 'r', encoding='utf-8') as file:
             divergence_data = json.load(file)
     except Exception as e:
         bot.send_message(message.chat.id, f"Ошибка загрузки данных: {e}")
         return
 
-    # Список таймфреймов в порядке от меньшего к большему
-    timeframes = ["in_1_hour", "in_2_hour", "in_4_hour", "in_daily"]
+    symbol = "BTCUSDT"
+    if symbol not in divergence_data:
+        bot.send_message(message.chat.id, "Нет данных для BTCUSDT")
+        return
 
-    # Сопоставление количества с эмодзи
+    timeframes = ["Interval.in_15_minute", "Interval.in_30_minute", "Interval.in_1_hour", "Interval.in_2_hour",
+                  "Interval.in_4_hour"]
+
+    divergence_count = {
+        "Bullish Divergence": defaultdict(int),
+        "Bearish Divergence": defaultdict(int)
+    }
+
+    # Считаем дивергенции только для "BTCUSDT"
+    symbol_data = divergence_data[symbol]
+    for divergence_type in ["Bullish Divergence", "Bearish Divergence"]:
+        for entry in symbol_data.get(divergence_type, []):
+            timeframe = entry['timeframe']
+            divergence_count[divergence_type][timeframe] += 1
+
     emoji_map = {
         0: '0️⃣',
         1: '1️⃣',
@@ -400,26 +392,23 @@ def check_gauss(message):
         3: '3️⃣',
         4: '4️⃣',
         5: '5️⃣',
-        6: '6️⃣'
+        6: '6️⃣+'
     }
 
-    # Строим результаты для bullish и bearish
     bullish_result = []
     bearish_result = []
 
     for timeframe in timeframes:
-        timeframe_data = divergence_data.get(timeframe, {})
-        bullish_count = len(timeframe_data.get('divergences', {}).get('bullish', []))
-        bearish_count = len(timeframe_data.get('divergences', {}).get('bearish', []))
+        bullish_count = divergence_count["Bullish Divergence"][timeframe]
+        bearish_count = divergence_count["Bearish Divergence"][timeframe]
 
-        # Добавляем результат с соответствующим эмодзи
         bullish_result.append(emoji_map.get(bullish_count, '6️⃣+'))
         bearish_result.append(emoji_map.get(bearish_count, '6️⃣+'))
 
-    # Объединяем результаты и отправляем пользователю
-    bullish_message = "Divergences ⬆️: " + ''.join(bullish_result)
-    bearish_message = "Divergences ⬇️: " + ''.join(bearish_result)
+    bullish_message = f"Divergences ⬆️: " + ''.join(bullish_result)
+    bearish_message = f"Divergences ⬇️: " + ''.join(bearish_result)
 
+    # Отправляем сообщение
     bot.send_message(message.chat.id, f'{bullish_message}\n{bearish_message}')
 
 @bot.message_handler(commands=['check_gauss'])
@@ -451,72 +440,6 @@ def check_macd(message):
 
     # Формируем ответное сообщение
     bot.send_message(message.chat.id, f"MACD CHECK: {result}")
-
-@bot.message_handler(commands=['check_divergences'])
-def check_divergences(message):
-    # Загружаем данные дивергенций
-    try:
-        with open('TvDatafeed_2/divergences_per_timeframe.json', 'r', encoding='utf-8') as file:
-            divergence_data = json.load(file)
-    except Exception as e:
-        bot.send_message(message.chat.id, f"Ошибка загрузки данных: {e}")
-        return
-
-    # Список таймфреймов в порядке от меньшего к большему
-    timeframes = ["in_1_hour", "in_2_hour", "in_4_hour", "in_daily"]
-
-    # Сопоставление количества с эмодзи
-    emoji_map = {
-        0: '0️⃣',
-        1: '1️⃣',
-        2: '2️⃣',
-        3: '3️⃣',
-        4: '4️⃣',
-        5: '5️⃣',
-        6: '6️⃣'
-    }
-
-    # Строим результаты для bullish и bearish
-    bullish_result = []
-    bearish_result = []
-
-    for timeframe in timeframes:
-        timeframe_data = divergence_data.get(timeframe, {})
-        bullish_count = len(timeframe_data.get('divergences', {}).get('bullish', []))
-        bearish_count = len(timeframe_data.get('divergences', {}).get('bearish', []))
-
-        # Добавляем результат с соответствующим эмодзи
-        bullish_result.append(emoji_map.get(bullish_count, '6️⃣+'))
-        bearish_result.append(emoji_map.get(bearish_count, '6️⃣+'))
-
-    # Объединяем результаты и отправляем пользователю
-    bullish_message = "Divergences ✅: " + ''.join(bullish_result)
-    bearish_message = "Divergences ❌: " + ''.join(bearish_result)
-
-    bot.send_message(message.chat.id, bullish_message)
-
-def continuous_gauss_check():
-    while True:
-        try:
-            gauss_data = load_gauss_data()
-            result = ("✅✅✅✅✅" if all(value == 1 for value in gauss_data.values()) else
-                      "❌❌❌❌❌" if all(value == 0 for value in gauss_data.values()) else
-                      None)  # Изменено на None для случаев смешанных значений
-
-            if result != None:  # Проверяем, есть ли результат, иначе пропускаем отправку
-                for chat_id in subscribers:
-                    try:
-                        bot.send_message(chat_id, f"GAUSS CHECK {result}")
-                    except telebot.apihelper.ApiTelegramException as e:
-                        if e.error_code == 403:
-                            logger.info(f"Bot was blocked by the user {chat_id}")
-                            # Здесь можно добавить код для удаления этого пользователя из списка подписчиков, если нужно
-                    except Exception as e:
-                        logger.error(f"Failed to send message to {chat_id}. Error: {e}")
-        except Exception as e:
-            logger.error(f"Error during GAUSS check: {e}")
-        time.sleep(300)  # пауза между проверками
-
 
 # @bot.message_handler(commands=['instruction'])
 # def send_instruction(message):
@@ -756,93 +679,93 @@ def update_sent_values(symbol, point_vhod):
     with open('sent_values.json', 'w') as file:
         json.dump(sent_values, file, indent=4)
 
-def check_three_minute_data_continuously():
-    def send_photo_to_subscribers(symbol, caption):
-        photo_path = os.path.join('photo', f'{symbol}.jpg')
-        if os.path.exists(photo_path):
-            for chat_id in subscribers:
-                try:
-                    with open(photo_path, 'rb') as photo:
-                        bot.send_photo(chat_id, photo, caption=caption)
-                except Exception as e:
-                    logger.error(f"Failed to send photo to {chat_id}. Error: {e}")
-        else:
-            logger.error(f"Image file not found: {photo_path}")
-            for chat_id in subscribers:
-                bot.send_message(chat_id, caption)
-
-    def check_three_minute_data():
-        last_index_path = 'last_notified_index.txt'
-        try:
-            with open(last_index_path, 'r') as f:
-                last_notified_index = int(f.read().strip())
-        except FileNotFoundError:
-            last_notified_index = 0
-
-        try:
-            with open('tvDatafeed_2/three_minute.json', 'r', encoding='utf-8') as file:
-                data = json.load(file)
-        except Exception as e:
-            logger.error(f"Error loading three_minute data: {e}")
-            return
-
-        sent_values = read_sent_values()
-        max_notified_index = last_notified_index
-        for coin_data in data:
-            symbol = coin_data['symbol']
-
-            # Check highs_after_hh
-            for item in coin_data.get('highs_after_hh', []):
-                if item['index'] > 1498 and item.get('point_vhod') != sent_values.get(symbol):
-                    logger.info(f"Found qualifying index in highs_after_hh: {item['index']}")
-                    caption = (f"{symbol}\nPDH перебит\n"
-                               f"Вход - {item.get('point_vhod', 'Не указан')}\n"
-                               f"Ликвидация - {item.get('point_liqvidation', 'Не указан')}\n"
-                               f"RR - {item.get('rr', 'Не указан')}\n")
-                    send_photo_to_subscribers(symbol, caption)
-                    update_sent_values(symbol, item.get('point_vhod'))
-                    max_notified_index = max(max_notified_index, item['index'])
-
-            # Check lows_after_ll
-            for item in coin_data.get('lows_after_ll', []):
-                if item['index'] > 1498 and item.get('point_vhod') != sent_values.get(symbol):
-                    logger.info(f"Found qualifying index in lows_after_ll: {item['index']}")
-                    caption = (f"{symbol}\nPDL перебит\n"
-                               f"Вход - {item.get('point_vhod', 'Не указан')}\n"
-                               f"Ликвидация - {item.get('point_liqvidation', 'Не указан')}\n"
-                               f"RR - {item.get('rr', 'Не указан')}\n")
-                    send_photo_to_subscribers(symbol, caption)
-                    update_sent_values(symbol, item.get('point_vhod'))
-                    max_notified_index = max(max_notified_index, item['index'])
-
-        if max_notified_index > last_notified_index:
-            with open(last_index_path, 'w') as f:
-                f.write(str(max_notified_index))
-
-    def send_message_to_subscribers(caption):
-        faulty_subscribers = []
-        for chat_id in subscribers:
-            try:
-                logger.info(f"Sending message to subscriber {chat_id}.")
-                bot.send_message(chat_id, caption)
-            except telebot.apihelper.ApiTelegramException as e:
-                logger.error(f"Failed to send message to {chat_id}. Error: {e}")
-                faulty_subscribers.append(chat_id)
-
-        # Optional: Remove faulty subscribers
-        for chat_id in faulty_subscribers:
-            subscribers.discard(chat_id)
-            logger.info(f"Removed faulty subscriber: {chat_id}")
-            save_subscribers()
-
-    def run_continuously():
-        while True:
-            check_three_minute_data()
-            time.sleep(10)
-
-    thread = threading.Thread(target=run_continuously)
-    thread.daemon = True
-    thread.start()
+# def check_three_minute_data_continuously():
+#     def send_photo_to_subscribers(symbol, caption):
+#         photo_path = os.path.join('photo', f'{symbol}.jpg')
+#         if os.path.exists(photo_path):
+#             for chat_id in subscribers:
+#                 try:
+#                     with open(photo_path, 'rb') as photo:
+#                         bot.send_photo(chat_id, photo, caption=caption)
+#                 except Exception as e:
+#                     logger.error(f"Failed to send photo to {chat_id}. Error: {e}")
+#         else:
+#             logger.error(f"Image file not found: {photo_path}")
+#             for chat_id in subscribers:
+#                 bot.send_message(chat_id, caption)
+#
+#     def check_three_minute_data():
+#         last_index_path = 'last_notified_index.txt'
+#         try:
+#             with open(last_index_path, 'r') as f:
+#                 last_notified_index = int(f.read().strip())
+#         except FileNotFoundError:
+#             last_notified_index = 0
+#
+#         try:
+#             with open('tvDatafeed_2/three_minute.json', 'r', encoding='utf-8') as file:
+#                 data = json.load(file)
+#         except Exception as e:
+#             logger.error(f"Error loading three_minute data: {e}")
+#             return
+#
+#         sent_values = read_sent_values()
+#         max_notified_index = last_notified_index
+#         for coin_data in data:
+#             symbol = coin_data['symbol']
+#
+#             # Check highs_after_hh
+#             for item in coin_data.get('highs_after_hh', []):
+#                 if item['index'] > 1498 and item.get('point_vhod') != sent_values.get(symbol):
+#                     logger.info(f"Found qualifying index in highs_after_hh: {item['index']}")
+#                     caption = (f"{symbol}\nPDH перебит\n"
+#                                f"Вход - {item.get('point_vhod', 'Не указан')}\n"
+#                                f"Ликвидация - {item.get('point_liqvidation', 'Не указан')}\n"
+#                                f"RR - {item.get('rr', 'Не указан')}\n")
+#                     send_photo_to_subscribers(symbol, caption)
+#                     update_sent_values(symbol, item.get('point_vhod'))
+#                     max_notified_index = max(max_notified_index, item['index'])
+#
+#             # Check lows_after_ll
+#             for item in coin_data.get('lows_after_ll', []):
+#                 if item['index'] > 1498 and item.get('point_vhod') != sent_values.get(symbol):
+#                     logger.info(f"Found qualifying index in lows_after_ll: {item['index']}")
+#                     caption = (f"{symbol}\nPDL перебит\n"
+#                                f"Вход - {item.get('point_vhod', 'Не указан')}\n"
+#                                f"Ликвидация - {item.get('point_liqvidation', 'Не указан')}\n"
+#                                f"RR - {item.get('rr', 'Не указан')}\n")
+#                     send_photo_to_subscribers(symbol, caption)
+#                     update_sent_values(symbol, item.get('point_vhod'))
+#                     max_notified_index = max(max_notified_index, item['index'])
+#
+#         if max_notified_index > last_notified_index:
+#             with open(last_index_path, 'w') as f:
+#                 f.write(str(max_notified_index))
+#
+#     def send_message_to_subscribers(caption):
+#         faulty_subscribers = []
+#         for chat_id in subscribers:
+#             try:
+#                 logger.info(f"Sending message to subscriber {chat_id}.")
+#                 bot.send_message(chat_id, caption)
+#             except telebot.apihelper.ApiTelegramException as e:
+#                 logger.error(f"Failed to send message to {chat_id}. Error: {e}")
+#                 faulty_subscribers.append(chat_id)
+#
+#         # Optional: Remove faulty subscribers
+#         for chat_id in faulty_subscribers:
+#             subscribers.discard(chat_id)
+#             logger.info(f"Removed faulty subscriber: {chat_id}")
+#             save_subscribers()
+#
+#     def run_continuously():
+#         while True:
+#             check_three_minute_data()
+#             time.sleep(10)
+#
+#     thread = threading.Thread(target=run_continuously)
+#     thread.daemon = True
+#     thread.start()
 
 def clear_console():
 
@@ -853,13 +776,10 @@ if __name__ == '__main__':
     while True:
         try:
             load_subscribers()
-            schedule.every(1).minute.do(check_updates)
-            check_three_minute_data_continuously()
+            # check_three_minute_data_continuously()
             continuous_rsi_check_thread = threading.Thread(target=continuous_rsi_check)
             continuous_rsi_check_thread.daemon = True
             continuous_rsi_check_thread.start()
-            thread = threading.Thread(target=continuous_gauss_check)
-            thread.start()
             bot.polling(none_stop=True, timeout=123)
         except Exception as e:
             logger.error(f"Ошибка при поллинге: {e}")

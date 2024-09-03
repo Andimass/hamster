@@ -1,7 +1,10 @@
 import datetime
 import enum
 import gc
+import itertools
 import json
+import warnings
+from collections import defaultdict
 import logging
 import os
 import random
@@ -10,6 +13,11 @@ import string
 import sys
 import time
 from math import sqrt
+import ta
+from scipy.optimize import minimize
+from ta.volatility import AverageTrueRange
+import plotly.graph_objs as go
+from plotly.subplots import make_subplots
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -199,146 +207,6 @@ while True:
                         break
 
                 return self.__create_df(raw_data, symbol)
-
-            @staticmethod
-            def find_imbalance(highs, lows):
-                imbalance_zones_green = []
-                imbalance_zones_red = []
-                n = len(highs)
-
-                for i in range(2, n):
-                    if lows[i] > highs[i - 2]:
-                        valid = True
-                        for j in range(i + 1, n):
-                            if highs[i - 2] > lows[j]:
-                                valid = True
-                                break
-                        if valid:
-                            imbalance_zones_green.append((i - 2, i))
-
-                for i in range(2, n):
-                    if highs[i] < lows[i - 2]:
-                        valid = True
-                        for j in range(i + 1, n):
-                            if lows[i - 2] < highs[j]:
-                                valid = True
-                                break
-                        if valid:
-                            imbalance_zones_red.append((i - 2, i))
-
-                return imbalance_zones_green, imbalance_zones_red
-
-            @staticmethod
-            def get_4h_imbalance_zones(symbol, exchange, n_bars):
-                tv = TvDatafeed()
-                four_hour_data = tv.get_hist(symbol, exchange, Interval.in_4_hour, n_bars // 4)
-                if four_hour_data is None:
-                    logger.error(f"Failed to retrieve 4-hour data for {symbol}")
-                    return None
-                four_hour_highs = four_hour_data["high"].tolist()
-                four_hour_lows = four_hour_data["low"].tolist()
-                four_hour_opens = four_hour_data["open"].tolist()
-                four_hour_closes = four_hour_data["close"].tolist()
-                four_hour_timestamps = four_hour_data.index.tolist()
-                n = len(four_hour_highs)
-
-                hist_data = tv.get_hist(symbol, exchange, Interval.in_1_hour, n_bars)
-                if hist_data is None:
-                    logger.error(f"Failed to retrieve hourly data for {symbol}")
-                    return None
-                highest = hist_data["high"].tolist()
-                lowest = hist_data["low"].tolist()
-                opens = hist_data["open"].tolist()
-                closes = hist_data["close"].tolist()
-                hourly_timestamps = hist_data.index.tolist()
-
-            @staticmethod
-            def calculate_midpoints(valid_zones_red_day, day_highs, day_lows):
-                midpoints = []
-                for zone in valid_zones_red_day:
-                    start_index, end_index = zone
-                    high_at_start = day_highs[start_index]
-                    low_at_end = day_lows[end_index]
-                    midpoint = (high_at_start + low_at_end) / 2
-                    midpoints.append((zone, midpoint))
-                return midpoints
-
-            @staticmethod
-            def calculate_average_midpoint(midpoints):
-                if not midpoints:
-                    return None
-                total_sum = sum(midpoint for _, midpoint in midpoints)
-                average_midpoint = total_sum / len(midpoints)
-                return average_midpoint
-
-            @staticmethod
-            def find_rejection_blocks(opens, closes):
-                rejection_blocks = []
-                for i in range(len(opens) - 1):
-                    if opens[i] < closes[i] and opens[i + 1] > closes[i + 1]:
-                        if closes[i + 1] < opens[i]:
-                            rejection_blocks.append(i)
-                return rejection_blocks
-
-            # @staticmethod
-            # def find_rejection_blocks(opens, highs, lows, closes, window=20):
-            #     rejection_blocks = []
-            #     closes_series = pd.Series(closes)
-            #     sma = closes_series.rolling(window=window).mean()
-            #
-            #     for i in range(1, len(opens) - 1):
-            #         # Условия для rejection block:
-            #         # 1. День i-1 заканчивается на повышении
-            #         # 2. День i заканчивается на снижении
-            #         # 3. Закрытие дня i ниже открытия дня i-1
-            #         # 4. Высокий день i меньше максимума дня i-1
-            #         # 5. Закрытие дня i ниже скользящей средней
-            #         if opens[i - 1] < closes[i - 1] and opens[i] > closes[i]:
-            #             if closes[i] < opens[i - 1] and highs[i] < highs[i - 1]:
-            #                 if closes[i] < sma[i]:
-            #                     rejection_blocks.append(i)
-            #     return rejection_blocks
-
-            @staticmethod
-            def test_hh_rejection_blocks(hh_indices, rejection_blocks, lows, closes):
-                hh_rb_combinations = 0
-                below_rb_after_combination = 0
-                above_rb_after_combination = 0
-                lows_at_rb_indices = []
-                lows_after_rb_indices = []
-                value = 1000
-
-                for hh_index in hh_indices:
-                    for rb_index in rejection_blocks:
-                        if 0 <= (rb_index - hh_index) <= 3:
-                            hh_rb_combinations += 1
-                            rb_min = closes[rb_index]
-
-                            if rb_index + 5 < len(closes):
-                                future_low = closes[rb_index + 5]
-                                percent_change = ((future_low - rb_min) / rb_min)
-                                percent_change = round(percent_change, 3)
-
-                                if future_low < rb_min:
-                                    below_rb_after_combination += 1
-                                    lows_at_rb_indices.append(rb_min)
-                                    lows_after_rb_indices.append(future_low)
-                                    value += (value * (abs(percent_change) * 25))
-                                elif future_low > rb_min:
-                                    # if percent_change > 0.1:
-                                    #     percent_change = 0.1
-                                    above_rb_after_combination += 1
-                                    lows_at_rb_indices.append(rb_min)
-                                    lows_after_rb_indices.append(future_low)
-                                    value -= (value * (abs(percent_change) * 25))
-
-                return (hh_rb_combinations,
-                        below_rb_after_combination,
-                        above_rb_after_combination,
-                        lows_at_rb_indices,
-                        lows_after_rb_indices,
-                        value)
-
             @staticmethod
             def update_prices(highs, lows, bar_indices, ax):
                 high_prices_arr = [highs[0]] * 10
@@ -516,71 +384,6 @@ while True:
                 return nearest
 
             @staticmethod
-            def test_highs_after_hh(highs_after_hh, hh_start_array, highs, lows, daily_max_highs, daily_min_lows):
-                results = []
-
-                for idx in highs_after_hh:
-                    previous_day_max = None
-                    previous_day_min = None
-
-                    # Определяем предыдущие максимумы и минимумы дня для текущего индекса
-                    for i in range(len(daily_max_highs)):
-                        if i < idx:
-                            previous_day_max = daily_max_highs[i]
-                            previous_day_min = daily_min_lows[i]
-                        else:
-                            break
-
-                    midpoint = (previous_day_max + previous_day_min) / 2
-
-                    # Проверяем, было ли пересечение midpoint или следующего hh
-                    hh_intersection = any(highs[idx] > highs[hh] for hh in hh_start_array if hh > idx)
-                    midpoint_intersection = lows[idx] <= midpoint
-
-                    result = {
-                        "idx": idx,
-                        "hh_intersection": hh_intersection,
-                        "midpoint_intersection": midpoint_intersection,
-                        "crossed_first": "midpoint" if midpoint_intersection and not hh_intersection else "hh" if hh_intersection and not midpoint_intersection else "both" if midpoint_intersection and hh_intersection else "none"
-                    }
-
-                    results.append(result)
-
-                return results
-
-            # @staticmethod
-            # def calculate_rsi(period=14):
-            #     tv = TvDatafeed()
-            #     history_data = tv.get_hist(symbol, exchange, Interval.in_1_hour, n_bars)
-            #     closes = history_data["close"].tolist()
-            #     df = pd.DataFrame(closes, columns=['close'])
-            #
-            #     if len(closes) < period:
-            #         logger.error(f"Not enough data to calculate RSI for the given period: {period}")
-            #         return None
-            #
-            #     delta = np.diff(closes)
-            #     gains = delta.clip(min=0)
-            #     losses = -delta.clip(max=0)
-            #
-            #     avg_gain = np.mean(gains[:period])
-            #     avg_loss = np.mean(losses[:period])
-            #
-            #     rs = avg_gain / avg_loss if avg_loss != 0 else np.inf
-            #     rsi = np.array([100 - (100 / (1 + rs))])
-            #     rsi_timestamps = [timestamps[period]]  # Начало с периода
-            #
-            #     for i in range(period, len(closes) - 1):
-            #         avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
-            #         avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
-            #
-            #         rs = avg_gain / avg_loss if avg_loss != 0 else np.inf
-            #         rsi = np.append(rsi, 100 - (100 / (1 + rs)))
-            #         rsi_timestamps.append(timestamps[i + 1])
-            #
-            #     return rsi, rsi_timestamps
-
-            @staticmethod
             def calculate_rsi(hist_data, window=14):
                 delta = hist_data['close'].diff()
                 gain = delta.clip(lower=0)
@@ -649,26 +452,6 @@ while True:
                 hist_data['MFI'] = 100 - (100 / (1 + money_flow_ratio))
 
                 return hist_data
-
-            @staticmethod
-            def plot_mfi(hist_data):
-                plt.figure(figsize=(10, 6))
-                mfi_line, = plt.plot(hist_data.index, hist_data['MFI'], label='Money Flow Index',
-                                     color='blue')  # Сохраняем линию как объект
-
-                # Добавляем горизонтальные линии для обозначения уровней перекупленности и перепроданности
-                plt.axhline(80, linestyle='--', color='r', label='Overbought (80)')
-                plt.axhline(20, linestyle='--', color='g', label='Oversold (20)')
-
-                # Добавление лейбла с текущей ценой в конце линии MFI
-                last_date = hist_data.index[-1]  # Последняя дата
-                last_mfi = hist_data['MFI'].iloc[-1]  # Последнее значение MFI
-                plt.text(last_date, last_mfi, f' {last_mfi:.2f}', color='blue', verticalalignment='center')
-
-                plt.title('Money Flow Index (MFI)')
-                plt.legend()
-                plt.show()
-
             @staticmethod
             def plot_mfi_over_timeframes(timeframes, symbol, exchange, n_bars, tv):
                 fig, ax = plt.subplots(figsize=(12, 8))
@@ -679,13 +462,13 @@ while True:
                     hist_data = tv.get_hist(symbol, exchange, timeframe, n_bars)
                     if not hist_data.empty:
                         hist_data_with_mfi = TvDatafeed.calculate_mfi(hist_data)
-                        ax.plot(hist_data_with_mfi.index, hist_data_with_mfi['MFI'], label=f'MFI {timeframe}',
-                                color=color)
+                        # ax.plot(hist_data_with_mfi.index, hist_data_with_mfi['MFI'], label=f'MFI {timeframe}',
+                        #         color=color)
                         mfi_dictionaries[timeframe] = hist_data_with_mfi['MFI'].iloc[-1]  # Сохраняем последнее значение MFI
 
-                ax.set_title('MFI Comparison Across Different Timeframes')
-                ax.legend()
-                plt.show()
+                # ax.set_title('MFI Comparison Across Different Timeframes')
+                # ax.legend()
+                # plt.show()
                 return mfi_dictionaries
 
             # Добавление функциональности сравнения
@@ -720,31 +503,16 @@ while True:
                 hist = macd - signal
                 return macd, signal, hist
 
+
             @staticmethod
             def plot_macd(hist_data, macd, signal, hist):
-                """Визуализирует MACD, его сигнал и гистограмму."""
-                plt.figure(figsize=(14, 7))
-
-                plt.plot(hist_data.index, macd, label='MACD', color='b')
-                plt.plot(hist_data.index, signal, label='Signal', color='orange')
-                plt.bar(hist_data.index, hist, label='Histogram', color='grey', alpha=0.3)
 
                 # Получаем последние дату и значения для MACD и сигнала
                 last_date = hist_data.index[-1]
                 last_macd = macd.iloc[-1]
                 last_signal = signal.iloc[-1]
 
-                plt.text(last_date, last_macd, f'{last_macd:.2f}', color='b', verticalalignment='center',
-                         horizontalalignment='right')
-                plt.text(last_date, last_signal, f'{last_signal:.2f}', color='orange', verticalalignment='center',
-                         horizontalalignment='right')
-
-                # Добавляем горизонтальные линии для обозначения уровней перекупленности и перепроданности (опционально)
-                plt.axhline(0, linestyle='--', color='grey', alpha=0.5)  # Zero Line
-
-                plt.title('MACD, Signal and Histogram')
-                plt.legend()
-                plt.show()
+                # plt.show()
 
             @staticmethod
             def ifisher(src, length):
@@ -873,22 +641,12 @@ while True:
                 return k_smooth, d
 
             @staticmethod
-            def plot_st(hist_data, k, d):
-                """Plots the Stochastic Oscillator (%K and %D)."""
-                plt.figure(figsize=(14, 7))
+            def plot_st(hist_data, k):
 
-                plt.plot(hist_data.index, k, label='%K', color='#2962FF')
-                plt.plot(hist_data.index, d, label='%D', color='#FF6D00')
-
-                plt.axhline(80, color='#787B86', linestyle='--', label='Upper Band')
-                plt.axhline(50, color='#787B86', linestyle='--', alpha=0.5, label='Middle Band')
-                plt.axhline(20, color='#787B86', linestyle='--', label='Lower Band')
-                plt.fill_between(hist_data.index, 20, 80, color='skyblue', alpha=0.4)
 
                 # Get the last date and values for %K and %D
                 last_date = hist_data.index[-1]
                 last_k = k.iloc[-1]
-                last_d = d.iloc[-1]
 
                 # plt.text(last_date, last_k, f'{last_k:.2f}', color='#2962FF', verticalalignment='center',
                 #          horizontalalignment='right')
@@ -910,34 +668,13 @@ while True:
 
             @staticmethod
             def plot_bb(hist_data, sma, upper_band, lower_band):
-                """Plots the Bollinger Bands."""
-                plt.figure(figsize=(14, 7))
-
-                plt.plot(hist_data.index, hist_data['close'], label='Close Price', color='black')
-                plt.plot(hist_data.index, sma, label='SMA', color='#2962FF')
-                plt.plot(hist_data.index, upper_band, label='Upper Band', color='#F23645')
-                plt.plot(hist_data.index, lower_band, label='Lower Band', color='#089981')
-
-                plt.fill_between(hist_data.index, lower_band, upper_band, color='skyblue', alpha=0.4,
-                                 label='Band Range')
 
                 # Get the last date and values for SMA, upper_band and lower_band
                 last_date = hist_data.index[-1]
                 last_sma = sma.iloc[-1]
                 last_upper = upper_band.iloc[-1]
                 last_lower = lower_band.iloc[-1]
-
-                # Add text labels for SMA, upper_band and lower_band
-                plt.text(last_date, last_sma, f'{last_sma:.2f}', color='#2962FF', verticalalignment='center',
-                         horizontalalignment='right')
-                plt.text(last_date, last_upper, f'{last_upper:.2f}', color='#F23645', verticalalignment='center',
-                         horizontalalignment='right')
-                plt.text(last_date, last_lower, f'{last_lower:.2f}', color='#089981', verticalalignment='center',
-                         horizontalalignment='right')
-
-                plt.title('Bollinger Bands')
-                plt.legend()
-                plt.show()
+                # plt.show()
 
             @staticmethod
             def gauss(x, h):
@@ -1003,7 +740,7 @@ while True:
 
                 plt.title(f'Nadaraya-Watson Envelope for {symbol}')
                 plt.legend()
-                plt.show()
+                # plt.show()
 
             @staticmethod
             def rbf_kernel(x1: np.array = np.array([]), x2: np.array = np.array([]), sigma_f: float = 1,
@@ -1172,6 +909,98 @@ while True:
 
                 return predictions
 
+            @staticmethod
+            def calculate_obv_ema(hist_data):
+                if 'close' not in hist_data.columns or 'volume' not in hist_data.columns:
+                    raise ValueError("DataFrame must contain 'close' and 'volume' columns")
+
+                # Инициализация OBV
+                obv = [0]  # Начальное значение OBV
+                for i in range(1, len(hist_data)):
+                    if hist_data['close'].iloc[i] > hist_data['close'].iloc[i - 1]:
+                        obv.append(obv[-1] + hist_data['volume'].iloc[i])
+                    elif hist_data['close'].iloc[i] < hist_data['close'].iloc[i - 1]:
+                        obv.append(obv[-1] - hist_data['volume'].iloc[i])
+                    else:
+                        obv.append(obv[-1])
+
+                # Создание Series с временными метками и значениями OBV
+                obv_series = pd.Series(obv, index=hist_data.index)
+                return obv_series
+
+            @staticmethod
+            def calculate_ema(prices, period):
+                ema_values = []
+                alpha = 2 / (period + 1)
+                ema_values.append(prices[0])  # Инициализация с первым значением цены
+
+                for price in prices[1:]:
+                    ema_values.append(alpha * price + (1 - alpha) * ema_values[-1])
+
+                return pd.Series(ema_values, index=prices.index)
+
+            @staticmethod
+            def calculate_supertrend(df, atr_period=50, factor=4.0):
+                """
+                Рассчитывает значения Supertrend.
+
+                :param df: DataFrame с историческими данными. Ожидаются столбцы: 'open', 'high', 'low', 'close'.
+                :param atr_period: Период ATR.
+                :param factor: Множитель для расчета Supertrend.
+                :return: DataFrame с колонками 'supertrend' и 'direction'.
+                """
+
+                data = pd.DataFrame({
+                    'close': hist_data['close'],
+                    'high': hist_data['high'],
+                    'low': hist_data['low'],
+                    'open': hist_data['open'],
+                    'volume': hist_data['volume']
+                }, index=hist_data.index)
+
+                ema_100 = tv.calculate_ema(data['close'], 100)
+
+
+                df = df.copy()
+
+                # Вычисляем ATR
+                df['atr'] = AverageTrueRange(df['high'], df['low'], df['close'], window=atr_period,
+                                             fillna=False).average_true_range()
+
+                # Вычисляем EMA 100
+                df['ema_100'] = df['close'].ewm(span=100, adjust=False).mean()
+
+                # Вычисляем Basic Upper Band и Basic Lower Band
+                df['basic_ub'] = (df['high'] + df['low']) / 2 + factor * df['atr']
+                df['basic_lb'] = (df['high'] + df['low']) / 2 - factor * df['atr']
+
+                # Инициализация столбцов final_ub и final_lb
+                df['final_ub'] = 0.0
+                df['final_lb'] = 0.0
+                df['supertrend'] = 0.0
+                df['direction'] = 0
+
+                for i in range(1, len(df)):
+                    df['final_ub'][i] = df['basic_ub'][i] if (
+                            (df['basic_ub'][i] < df['final_ub'][i - 1]) or (
+                                df['close'][i - 1] > df['final_ub'][i - 1])) else df['final_ub'][i - 1]
+                    df['final_lb'][i] = df['basic_lb'][i] if (
+                            (df['basic_lb'][i] > df['final_lb'][i - 1]) or (
+                                df['close'][i - 1] < df['final_lb'][i - 1])) else df['final_lb'][i - 1]
+
+                    # Логика пересечения и корректировки тренда
+                    if df['close'][i] > df['final_ub'][i - 1] and df['close'][i] > ema_100[i]:
+                        df['supertrend'][i] = df['final_lb'][i]
+                        df['direction'][i] = 1  # Восходящий тренд
+                    elif df['close'][i] < df['final_lb'][i - 1] and df['close'][i] < ema_100[i]:
+                        df['supertrend'][i] = df['final_ub'][i]
+                        df['direction'][i] = -1  # Нисходящий тренд
+                    else:
+                        df['supertrend'][i] = df['supertrend'][i - 1]
+                        df['direction'][i] = df['direction'][i - 1]
+
+                return df[['supertrend', 'direction']]
+
 
         if __name__ == "__main__":
             logging.basicConfig(level=logging.FATAL)
@@ -1179,11 +1008,20 @@ while True:
                 logger = logging.getLogger(logger_name)
                 logger.setLevel(logging.WARNING)
             pd.set_option('display.max_rows', None)
-            coins = ["BTCUSDT", "ETHUSDT"]
+            warnings.simplefilter(action='ignore', category=FutureWarning)
+            warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+            coins = ["BTCUSDT", "ETHUSDT", "ARBUSDT"]
 
             value = 1000
             value_3_percent = (value / 100) * 3
             itog = 1000
+
+            csv_file_path_15 = "BINANCE_BTCUSDT, 15_969da.csv"
+            csv_file_path_30 = "BINANCE_BTCUSDT, 30_03dcc.csv"
+            csv_file_path_1 = "BINANCE_BTCUSDT, 60_379df.csv"
+            csv_file_path_2 = "BINANCE_BTCUSDT, 120_b5321.csv"
+            csv_file_path_4 = "BINANCE_BTCUSDT, 240_4961b.csv"
+            csv_file_path_8h = "BINANCE_BTCUSDT, 480_d0a25.csv"
 
             while True:
                 for symbol in coins:
@@ -1245,363 +1083,88 @@ while True:
 
                     open_figures = []
 
+                    timeframes = [Interval.in_5_minute, Interval.in_15_minute, Interval.in_1_hour]
+
+                    for timeframe in timeframes:
+                        hist_data = tv.get_hist(symbol, exchange, timeframe, n_bars)
+
+                        supertrend_df = tv.calculate_supertrend(hist_data, atr_period=50, factor=4.0)
+
+                        # Печать первых 5 строк результата
+                        print(supertrend_df.head())
+
+                        # Пример проверки условий для создания сигналов
+                        supertrend_df['trend_change'] = supertrend_df['direction'].diff().abs()
+                        uptrend_signals = supertrend_df[
+                            (supertrend_df['direction'] == 1) & (supertrend_df['trend_change'] == 2)]
+                        downtrend_signals = supertrend_df[
+                            (supertrend_df['direction'] == -1) & (supertrend_df['trend_change'] == 2)]
+
+                        print("Uptrend signals:")
+                        print(uptrend_signals)
+                        print("Downtrend signals:")
+                        print(downtrend_signals)
+
+                        # Построение графика
+                        fig = make_subplots(rows=1, cols=1)
+
+                        # Добавление цены закрытия
+                        fig.add_trace(go.Scatter(
+                            x=hist_data.index[10:],
+                            y=hist_data['close'][10:],
+                            mode='lines',
+                            name='Close Price',
+                            line=dict(color='blue', width=2),
+                            opacity=0.5
+                        ))
+
+                        # Добавление линии Supertrend
+                        fig.add_trace(go.Scatter(
+                            x=supertrend_df.index[10:],
+                            y=supertrend_df['supertrend'][10:],
+                            mode='lines',
+                            name='Supertrend',
+                            line=dict(color='red', width=2),
+                            opacity=0.7
+                        ))
+
+                        # Настройка графика
+                        fig.update_layout(
+                            title='Supertrend Indicator',
+                            xaxis_title='Date',
+                            yaxis_title='Price',
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                        )
+
+                        # fig.show()
+
                     hist_data = tv.get_hist(symbol, exchange, Interval.in_3_minute, n_bars)
 
                     plt.figure(figsize=(24, 14), clear=True)
                     fig, ax = plt.subplots(figsize=(24, 14), clear=True)
-                    plt.title(f'Graph for {symbol}', fontsize=20, loc='center')
-
-                    rejection_blocks = tv.find_rejection_blocks(opens, closes)
-                    # print("Rejection blocks found at indexes:", rejection_blocks)
 
                     bar_width = 0.5
-                    colors = ['green' if open_price < close_price else 'red' for open_price, close_price in
-                              zip(opens, closes)]
-
-                    ax.vlines(x=range(len(hist_data)), ymin=lows, ymax=highs, color='black', linewidth=0.5, zorder=0)
-                    ax.bar(range(len(hist_data)), abs(np.array(opens) - np.array(closes)),
-                           bottom=np.minimum(opens, closes),
-                           color=colors, width=0.7, zorder=1)
 
                     hh_ind, hl_ind, lh_ind, ll_ind, bull_bos_ends, bear_bos_ends = tv.update_prices(highs, lows,
                                                                                                     range(len(highs)),
                                                                                                     ax)
-                    # print("HH indices:", hh_ind)  # Print HH indices
-                    # print("HL indices:", hl_ind)  # Print HH indices
 
-                    midnight_indices = [i for i, timestamp in enumerate(timestamps) if
-                                        timestamp.hour == 0 and timestamp.minute == 0]
-
-                    daily_max_highs = []
-                    daily_min_lows = []
-                    three_minute_long = []
-                    three_minute_short = []
-                    three_minute_short_baz = {}
-                    three_minute_long_baz = {}
-                    rr_max_day = {}
-                    rr_min_day = {}
-                    rr_sum = []
-                    all_rr_values = []
-
-                    highs_after_hh = []
-                    lows_after_ll = []
-
-                    hl_array = []
-                    hl_start_array = []
-                    hl_price_array = {}
-                    hh_array = []
-                    hh_start_array = []
-                    hh_price_array = {}
-                    lh_array = []
-                    lh_start_array = []
-                    lh_price_array = {}
-                    ll_array = []
-                    ll_start_array = []
-                    ll_price_array = {}
-
-                    point_vhod_short = {}
-                    point_vhod_long = {}
-                    point_liqvidation_short = {}
-                    point_liqvidation_long = {}
-                    rr_array_short = {}
-                    rr_array_long = {}
-
-                    point_vhod_short_max = {}
-                    point_vhod_long_max = {}
-                    point_liqvidation_short_max = {}
-                    point_liqvidation_long_max = {}
-                    rr_array_short_max = {}
-                    rr_array_long_max = {}
-
-                    for hl in hl_ind:
-                        for i in range(hl + 1, len(lows)):
-                            if lows[i] < lows[hl]:
-                                hl_array.append(i)
-                                hl_price_array[i] = lows[hl]
-                                hl_start_array.append(hl)
-                                break
-
-                    for lh in lh_ind:
-                        for i in range(lh + 1, len(highs)):
-                            if highs[i] > highs[lh]:
-                                lh_array.append(i)
-                                lh_price_array[i] = highs[lh]
-                                lh_start_array.append(lh)
-                                break
-
-                    for hh in hh_ind:
-                        for i in range(hh + 1, len(lows)):
-                            if lows[i] < lows[hh]:
-                                hh_array.append(i)
-                                hh_price_array[i] = highs[hh]
-                                hh_start_array.append(hh)
-                                break
-                    for ll in ll_ind:
-                        for i in range(ll + 1, len(highs)):
-                            if highs[i] > highs[ll]:
-                                ll_array.append(i)
-                                ll_price_array[i] = highs[ll]
-                                ll_start_array.append(ll)
-                                break
-
-                    # Создаем список максимумов и минимумов для каждого дня
-                    for start, end in zip(midnight_indices[:-1], midnight_indices[1:]):
-                        daily_max_highs.append(max(highs[start:end]))
-                        daily_min_lows.append(min(lows[start:end]))
-
-                    # Проверяем, превышают ли текущие значения максимумы или минимумы предыдущего дня
-                    for i in range(1, len(midnight_indices)):
-                        day_start = midnight_indices[i]
-                        day_end = midnight_indices[i + 1] if i + 1 < len(midnight_indices) else len(closes)
-
-                        previous_day_max = daily_max_highs[i - 1]
-                        previous_day_min = daily_min_lows[i - 1]
-                        midpoint = (previous_day_max + previous_day_min) / 2
-                        max_broken = False
-                        min_broken = False
-                        day_max = []
-                        day_min = []
-
-                        for j in range(day_start, day_end):
-                            if not max_broken and highs[j] > previous_day_max:
-                                ax.scatter(j, highs[j], color='blue', s=100,
-                                           label='Break Above Max' if not max_broken else "")
-                                day_max.append(j)
-                                max_broken = True
-                            if not min_broken and lows[j] < previous_day_min:
-                                ax.scatter(j, lows[j], color='orange', s=100,
-                                           label='Break Below Min' if not min_broken else "")
-                                day_min.append(j)
-                                min_broken = True
-
-                            if max_broken and min_broken:
-                                break
-
-                        for max_idx in day_max:
-                            if highs[max_idx] > daily_max_highs[i - 1]:
-                                ax.scatter(max_idx, highs[max_idx], color='blue', s=100, label='Break Above Max')
-                                three_minute_short.append(max_idx)
-                                nearest_hh_idx = min([hh for hh in hh_start_array if hh >= max_idx], default=None)
-
-                                # Проверяем, есть ли следующий hh после найденного nearest_hh_idx
-                                if nearest_hh_idx is not None:
-                                    next_hh_candidates = [hh for hh in hh_start_array if hh > nearest_hh_idx]
-                                    if next_hh_candidates:
-                                        next_hh_idx = next_hh_candidates[
-                                            0]  # Предполагаем, что hh_start_array отсортирован по возрастанию
-                                        # Сравниваем высоты текущего и следующего hh
-                                        if highs[next_hh_idx] > highs[nearest_hh_idx]:
-                                            nearest_hh_idx = next_hh_idx  # Обновляем, если следующий hh выше текущего
-
-                                nearest_hl_idx = min([hl for hl in hl_array if hl > max_idx] + [lh for lh in lh_array if
-                                                                                                lh > max_idx] + [ll for
-                                                                                                                 ll in
-                                                                                                                 ll_array
-                                                                                                                 if
-                                                                                                                 ll > max_idx],
-                                                     default=None)
-                                if nearest_hl_idx is not None:
-                                    hl_price = hl_price_array[nearest_hl_idx] if nearest_hl_idx in hl_price_array else \
-                                    lows[nearest_hl_idx]
-                                    ax.scatter(nearest_hl_idx, hl_price, color='grey', s=300, label='Low Below HL Low')
-                                    ax.plot([max_idx, nearest_hl_idx], [highs[max_idx], hl_price], color='purple',
-                                            linestyle='--')
-                                    highs_after_hh.append(nearest_hl_idx)
-                                    if nearest_hl_idx is not None:
-                                        hl_price = hl_price_array.get(nearest_hl_idx, lows[nearest_hl_idx])
-                                        hh_price = hh_price_array.get(nearest_hh_idx, highs[
-                                            nearest_hh_idx]) if nearest_hh_idx is not None else None
-
-                                        max_high_value = 1
-                                        max_high_index = nearest_hl_idx
-
-                                        if nearest_hh_idx is not None:
-                                            for idx in range(nearest_hl_idx + 1, len(highs)):
-                                                if highs[idx] > max_high_value and highs[idx] <= highs[nearest_hh_idx]:
-                                                    max_high_value = highs[idx]
-                                                    max_high_index = idx
-
-                                                # Условия остановки поиска
-                                                if highs[idx] <= midpoint or highs[idx] >= hh_price:
-                                                    break
-
-                                        price_muv_1pct_short = round(hl_price / 100, 3)
-                                        price_muv_liqvidation_short = round((hh_price / price_muv_1pct_short) - 100,
-                                                                            3) if hh_price else None
-                                        price_muv_profit_short = round(100 - (midpoint / price_muv_1pct_short), 3)
-                                        RR_short = round(price_muv_profit_short / price_muv_liqvidation_short,
-                                                         3) if price_muv_liqvidation_short else None
-                                        point_vhod_short[nearest_hl_idx] = hl_price
-                                        if nearest_hl_idx is not None and nearest_hh_idx is not None:
-                                            point_liqvidation_short[nearest_hl_idx] = hh_price if hh_price else highs[
-                                                nearest_hh_idx]
-                                        rr_array_short[nearest_hl_idx] = RR_short if RR_short else None
-                                        rr_sum.append(RR_short if RR_short else 0)
-
-                                        price_muv_1pct_short_max = round(max_high_value / 100, 3)
-                                        price_muv_liqvidation_short_max = round(
-                                            (highs[nearest_hh_idx] / price_muv_1pct_short_max) - 100,
-                                            3) if hh_price else None
-                                        price_muv_profit_short_max = round(100 - (midpoint / price_muv_1pct_short_max),
-                                                                           3)
-                                        RR_short_max = round(
-                                            price_muv_profit_short_max / price_muv_liqvidation_short_max,
-                                            3) if price_muv_liqvidation_short_max else None
-                                        point_vhod_short_max[nearest_hl_idx] = max_high_value
-                                        if nearest_hh_idx is not None and nearest_hl_idx is not None:
-                                            point_liqvidation_short_max[nearest_hl_idx] = hh_price if hh_price else \
-                                            highs[
-                                                nearest_hh_idx]
-                                        rr_array_short_max[nearest_hl_idx] = RR_short_max if RR_short_max else None
-                                        rr_sum.append(RR_short if RR_short else 0)
-
-                        for min_idx in day_min:
-                            if lows[min_idx] < daily_min_lows[i - 1]:
-                                ax.scatter(min_idx, lows[min_idx], color='blue', s=100, label='Break Below Min')
-                                three_minute_long.append(min_idx)
-
-                                nearest_ll_idx = min([ll for ll in ll_start_array if ll >= min_idx], default=None)
-                                nearest_lh_idx = min([lh for lh in lh_array if lh > min_idx] + [hl for hl in hl_array if
-                                                                                                hl > min_idx] + [hh for
-                                                                                                                 hh in
-                                                                                                                 hh_array
-                                                                                                                 if
-                                                                                                                 hh > min_idx],
-                                                     default=None)
-
-                                if nearest_ll_idx is not None:
-                                    next_ll_candidates = [ll for ll in ll_start_array if ll > nearest_ll_idx]
-                                    if next_ll_candidates:
-                                        next_ll_idx = next_ll_candidates[
-                                            0]  # Предполагаем, что hh_start_array отсортирован по возрастанию
-                                        # Сравниваем высоты текущего и следующего hh
-                                        if lows[next_ll_idx] < lows[nearest_ll_idx]:
-                                            nearest_ll_idx = next_ll_idx  # Обновляем, если следующий hh выше текущего
-
-                                if nearest_lh_idx is not None:
-                                    lh_price = lh_price_array[nearest_lh_idx] if nearest_lh_idx in lh_price_array else \
-                                    highs[nearest_lh_idx]
-
-                                    ax.scatter(nearest_lh_idx, lh_price, color='grey', s=300,
-                                               label='High Above LH High')
-                                    ax.plot([min_idx, nearest_lh_idx], [lows[min_idx], lh_price], color='purple',
-                                            linestyle='--')
-
-                                    lows_after_ll.append(nearest_lh_idx)
-
-                                    lh_price = lh_price_array.get(nearest_lh_idx, highs[nearest_lh_idx])
-                                    ll_price = ll_price_array.get(nearest_ll_idx, lows[
-                                        nearest_ll_idx]) if nearest_ll_idx is not None else None
-
-                                    min_low_value = lows[nearest_lh_idx]
-                                    min_low_index = nearest_lh_idx
-
-                                    # Поиск максимального highs в интервале
-                                    for idx in range(nearest_lh_idx + 1, len(lows)):
-                                        if lows[idx] < min_low_value and lows[idx] >= lows[nearest_ll_idx]:
-                                            min_low_value = lows[idx]
-                                            min_low_index = idx
-
-                                        # Условия остановки поиска
-                                        if lows[idx] <= midpoint or lows[idx] <= ll_price:
-                                            break
-
-                                    price_muv_1pct_long = round(highs[nearest_lh_idx] / 100, 3)
-                                    price_muv_liqvidation_long = round(
-                                        100 - (highs[nearest_ll_idx] / price_muv_1pct_long), 3)
-                                    price_muv_profit_long = round((midpoint / price_muv_1pct_long) - 100, 3)
-                                    RR_long = round(price_muv_profit_long / price_muv_liqvidation_long, 3)
-                                    point_vhod_long[nearest_lh_idx] = highs[nearest_lh_idx]
-                                    point_liqvidation_long[nearest_lh_idx] = lows[nearest_ll_idx]
-                                    rr_array_long[nearest_lh_idx] = RR_long
-                                    rr_sum.append(RR_long)
-
-                                    price_muv_1pct_long_max = round(highs[nearest_lh_idx] / 100, 3)
-                                    price_muv_liqvidation_long_max = round(
-                                        100 - (highs[nearest_ll_idx] / price_muv_1pct_long_max), 3)
-                                    price_muv_profit_long_max = round((midpoint / price_muv_1pct_long_max) - 100, 3)
-                                    RR_long_max = round(price_muv_profit_long / price_muv_liqvidation_long_max, 3)
-                                    point_vhod_long_max[nearest_lh_idx] = highs[nearest_lh_idx]
-                                    point_liqvidation_long_max[nearest_lh_idx] = lows[nearest_ll_idx]
-                                    rr_array_long_max[nearest_lh_idx] = RR_long_max
-                                    rr_sum.append(RR_long)
-
-                    for idx, (start, end) in enumerate(zip(midnight_indices[:-1], midnight_indices[1:]), 1):
-                        max_high = max(highs[start:end])
-                        max_high_idx = start + highs[start:end].index(max_high)
-
-                        for i in range(max_high_idx, len(highs)):
-                            if highs[i] > max_high:
-                                end_idx = i - 1
-                                break
-                        else:
-                            end_idx = len(highs) - 1
-
-                        ax.hlines(max_high, max_high_idx, end_idx, colors='black', linestyles='dotted', linewidth=2)
-
-                        mid_point = (max_high_idx + end_idx) // 2
-                        ax.text(mid_point, max_high, str(len(midnight_indices) - idx), color='black', ha='center',
-                                va='bottom')
-
-                    for idx, (start, end) in enumerate(zip(midnight_indices[:-1], midnight_indices[1:]), 1):
-                        min_low = min(lows[start:end])
-                        min_low_idx = start + lows[start:end].index(min_low)
-
-                        for i in range(min_low_idx, len(lows)):
-                            if lows[i] < min_low:
-                                end_idx = i - 1
-                                break
-                        else:
-                            end_idx = len(lows) - 1
-
-                        ax.hlines(min_low, min_low_idx, end_idx, colors='grey', linestyles='dotted', linewidth=2)
-
-                        mid_point = (min_low_idx + end_idx) // 2
-                        ax.text(mid_point, min_low, str(len(midnight_indices) - idx), color='red', ha='center',
-                                va='top')
-
-                    handles, labels = ax.get_legend_handles_labels()
-                    by_label = dict(zip(labels, handles))
-                    ax.legend(by_label.values(), by_label.keys())
-
-                    ax.set_xlim([0, len(hist_data)])
-                    ax.set_ylim([min(lows) * 0.95, max(highs) * 1.05])
-
-                    # plt.scatter(hh_ind, [highs[i] for i in hh_ind], color='green', label='HH')
-                    # plt.scatter(hl_ind, [lows[i] for i in hl_ind], color='blue', label='HL')
-                    # plt.scatter(lh_ind, [highs[i] for i in lh_ind], color='orange', label='LH')
-                    # plt.scatter(ll_ind, [lows[i] for i in ll_ind], color='red', label='LL')
-
-                    handles, labels = ax.get_legend_handles_labels()
-                    by_label = dict(zip(labels, handles))
-                    ax.legend(by_label.values(), by_label.keys())
-
-                    ax.set_xlim([0, len(hist_data)])
-                    ax.set_ylim([min(lows), max(highs)])
-
-                    results = tv.test_highs_after_hh(highs_after_hh, hh_start_array, highs, lows, daily_max_highs,
-                                                     daily_min_lows)
-
-                    hist_data = tv.get_hist(symbol, exchange, Interval.in_4_hour, n_bars)
+                    hist_data = tv.get_hist(symbol, exchange, Interval.in_1_hour, n_bars)
 
                     if hist_data is not None:
                         sma, upper_band, lower_band = tv.calculate_bb(hist_data)
-                        tv.plot_bb(hist_data, sma, upper_band, lower_band)
 
                         # last_upper = upper_band[-1]
                         # last_lower = lower_band[-1]
 
                     if hist_data is not None:
                         k_smooth, d = tv.calculate_st(hist_data)
-                        tv.plot_st(hist_data, k_smooth, d)
 
                     if hist_data is not None:
                         hist_data_with_mfi = TvDatafeed.calculate_mfi(hist_data)
-                        tv.plot_mfi(hist_data_with_mfi)
 
                     if hist_data is not None:
                         macd, signal, hist = tv.calculate_macd(hist_data)
-                        tv.plot_macd(hist_data, macd, signal, hist)
 
                     if symbol == "BTCUSDT":
                         timeframes = [Interval.in_1_hour, Interval.in_2_hour, Interval.in_4_hour, Interval.in_daily]
@@ -1685,43 +1248,144 @@ while True:
                     #
                     # # Plot Aroon indicator
                     # TvDatafeed.plot_aroon(timestamps, aup, adn, symbol)
+                    def collect_stoch_data(tv, symbol, exchange, timeframes, n_bars):
+                        stoch_dictionaries = {}  # Словарь для сохранения значений %K и %D для каждого таймфрейма
 
-                    timeframes = [Interval.in_4_hour, Interval.in_2_hour, Interval.in_1_hour, Interval.in_30_minute, Interval.in_15_minute]
-                    rsi_dictionaries = {}  # Словарь для сохранения RSI значений для каждого таймфрейма
-                    colors = ['red', 'blue', 'green', 'purple']  # Цвета для различных таймфреймов
+                        for timeframe in timeframes:
+                            # Получение исторических данных для данного таймфрейма
+                            hist_data = tv.get_hist(symbol, exchange, timeframe, n_bars)
 
-                    fig, ax = plt.subplots(figsize=(12, 8))  # Создание одной фигуры и осей
+                            if hist_data is not None and not hist_data.empty:
+                                # Расчет стохастического осциллятора
+                                k, d = tv.calculate_st(hist_data)
 
-                    for timeframe, color in zip(timeframes, colors):
-                        # Получение исторических данных для данного таймфрейма
-                        hist_data = tv.get_hist(symbol, exchange, timeframe, n_bars)
-
-                        if hist_data is not None and not hist_data.empty:
-                            # Расчёт RSI
-                            rsi = tv.calculate_rsi(hist_data)
-
-                            if rsi is not None and not rsi.empty:
-                                # Отрисовка RSI на общих осях, каждый в своём цвете
-                                ax.plot(hist_data.index[-55:], rsi[-55:], label=f'RSI {timeframe}', color=color)
-
-                                # Добавление текста с последним значением RSI
-                                last_date = hist_data.index[-1]
-                                last_rsi = rsi.iloc[-1]
-                                ax.text(last_date, last_rsi, f'{last_rsi:.2f}', color=color, ha='right', va='center')
-
-                                # Сохранение значений RSI в словарь для текущего таймфрейма
-                                rsi_dict = {date: rsi_value for date, rsi_value in
-                                            zip(hist_data.index[-55:], rsi[-55:])}
-                                rsi_dictionaries[timeframe] = rsi_dict  # Сохраняем словарь в главный словарь
+                                if k is not None and not k.empty and d is not None and not d.empty:
+                                    # Сохранение значений %K и %D в словарь для текущего таймфрейма
+                                    stoch_dictionaries[timeframe] = {
+                                        'k_values': k.iloc[-100:].to_dict(),  # Сохраняем последние 5 значений %K
+                                        'd_values': d.iloc[-100:].to_dict()  # Сохраняем последние 5 значений %D
+                                    }
                             else:
-                                print(f"RSI calculation failed for {timeframe}")
-                        else:
-                            print(f"No historical data available for {timeframe}")
+                                print(f"No historical data available for {timeframe}")
 
-                    ax.set_title('RSI Comparison Across Different Timeframes')
-                    ax.legend()
-                    plt.show()
+                        return stoch_dictionaries
 
+
+                    def compare_stoch_values(stoch_dictionaries):
+                        comparisons = {}
+                        for timeframe, data in stoch_dictionaries.items():
+                            last_k = list(data['k_values'].values())[-1]
+                            last_d = list(data['d_values'].values())[-1]
+
+                            # Сравнение %K и %D
+                            comparison_key = f"%K > %D in {timeframe}"
+                            comparisons[comparison_key] = last_k > last_d
+
+                        return comparisons
+
+
+                    if symbol == "BTCUSDT":
+
+                        timeframes = [Interval.in_15_minute, Interval.in_30_minute, Interval.in_1_hour, Interval.in_2_hour, Interval.in_4_hour]
+                        n_bars = 200  # Количество баров для анализа
+                        stoch_data = collect_stoch_data(tv, symbol, exchange, timeframes, n_bars)
+                        stoch_comparisons = compare_stoch_values(stoch_data)
+                        print(stoch_comparisons)
+
+                        def plot_stochastic_oscillator(stoch_dictionaries, timeframes):
+                            colors_k = ['red', 'blue', 'green', 'purple']
+                            colors_d = ['#FF6347', '#4682B4', '#32CD32', '#800080']
+
+                            # Словарь для сохранения последних значений %K и %D для Interval.in_1_hour
+                            last_values = {}
+
+                            for timeframe, color_k, color_d in zip(timeframes, colors_k, colors_d):
+                                data = stoch_dictionaries.get(timeframe)
+                                if data:
+                                    k_values = list(data['k_values'].values())
+                                    d_values = list(data['d_values'].values())
+                                    dates = list(data['k_values'].keys())
+
+                                    if timeframe == Interval.in_1_hour:  # Указываем интересующий интервал
+                                        last_values['last_k'] = k_values[-1]
+                                        last_values['last_d'] = d_values[-1]
+
+                            return last_values, k_values, d_values
+
+
+                        if symbol == "BTCUSDT":
+                            last_stoch_values, k_values, d_values = plot_stochastic_oscillator(stoch_data, timeframes)
+
+                            # Включение последних значений в JSON для сохранения
+                            stoch_comparisons['last_values'] = last_stoch_values
+
+                            with open('stoch_comparisons.json', 'w') as json_file:
+                                json.dump(stoch_comparisons, json_file, indent=4)
+
+                    if symbol == "BTCUSDT":
+
+                        rsi_dictionaries = {}
+                        color = 'black'
+
+
+                        def calculate_rsi(data, period=14):
+                            delta = data['close'].diff()
+                            gain = delta.clip(lower=0)
+                            loss = -delta.clip(upper=0)
+
+                            avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+                            avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+
+                            rs = avg_gain / avg_loss
+                            rsi = 100 - (100 / (1 + rs))
+                            return rsi
+
+                        rsi = calculate_rsi(hist_data)
+
+
+                        def calculate_wma(values, period):
+                            weights = np.arange(1, period + 1)
+                            return values.rolling(period).apply(lambda prices: np.dot(prices, weights) / weights.sum(),
+                                                                raw=True)
+
+
+                        def calculate_hma(data, period=14):
+                            half_length = int(period / 2)
+                            sqrt_length = int(np.sqrt(period))
+
+                            wma_half_length = calculate_wma(data, half_length)
+                            wma_full_length = calculate_wma(data, period)
+                            hma = (calculate_wma(2 * wma_half_length - wma_full_length, sqrt_length))
+                            return hma
+
+
+
+                        HMA_RSI = calculate_hma(rsi)
+                        formation_points = []
+
+                        for entry_idx in range(len(hist_data) - 5):
+                            if entry_idx + 5 < len(hist_data):
+                                entry_close = hist_data.iloc[entry_idx]['close']
+                                next_close = hist_data.iloc[entry_idx + 1]['close']
+                                next_open = hist_data.iloc[entry_idx + 1]['open']
+                                next_low = hist_data.iloc[entry_idx + 1]['low']
+
+                                # Условие для входа
+                                if (next_close > entry_close and
+                                        (next_open - next_low) <= 3 * (entry_close - next_low) and
+                                        all(hist_data.iloc[entry_idx + i]['low'] >= next_low for i in
+                                            range(2, 5)) and
+                                        (hist_data.iloc[entry_idx + 5]['close'] - hist_data.iloc[entry_idx + 5][
+                                            'open']) >= 2 * (entry_close - next_low)):
+                                    formation_points.append(entry_idx + 1)
+
+                    timeframes = [Interval.in_4_hour, Interval.in_2_hour, Interval.in_1_hour, Interval.in_30_minute,
+                                  Interval.in_15_minute]
+                    rsi_dictionaries = {}
+                    rsi_dictionaries_2 = {}
+
+                    timeframes = [Interval.in_4_hour, Interval.in_2_hour, Interval.in_1_hour, Interval.in_30_minute,
+                                  Interval.in_15_minute]
                     for timeframe in timeframes:
                         # Получение исторических данных для данного таймфрейма
                         hist_data = tv.get_hist(symbol, exchange, timeframe, n_bars)
@@ -1733,6 +1397,9 @@ while True:
                             if rsi is not None and not rsi.empty:
                                 # Обновление словаря с последними 5 значениями RSI
                                 rsi_dictionaries[timeframe] = rsi.iloc[-5:].to_dict()
+                                rsi_dictionaries_2[timeframe] = rsi.iloc[-110:].to_dict()
+
+                    print("RSI", rsi[-1])
 
                     # Проверка условий для RSI на различных таймфреймах
                     if all(timeframe in rsi_dictionaries for timeframe in timeframes):
@@ -1742,7 +1409,14 @@ while True:
                         rsi_2h = rsi_dictionaries[Interval.in_2_hour]
                         rsi_4h = rsi_dictionaries[Interval.in_4_hour]
 
-                        # Извлечение последних значений RSI для каждого таймфрейма
+                        if all(timeframe in rsi_dictionaries_2 for timeframe in timeframes):
+                            rsi_15m_2 = rsi_dictionaries_2[Interval.in_15_minute]
+                            rsi_30m_2 = rsi_dictionaries_2[Interval.in_30_minute]
+                            rsi_1h_2 = rsi_dictionaries_2[Interval.in_1_hour]
+                            rsi_2h_2 = rsi_dictionaries_2[Interval.in_2_hour]
+                            rsi_4h_2 = rsi_dictionaries_2[Interval.in_4_hour]
+
+
                         last_rsi_15m = list(rsi_15m.values())[-1]
                         last_rsi_30m = list(rsi_30m.values())[-1]
                         last_rsi_1h = list(rsi_1h.values())[-1]
@@ -1764,100 +1438,1128 @@ while True:
                         if symbol == "BTCUSDT":
                             last_rsi_1h = round(list(rsi_1h.values())[-1], 2)
 
+                            data_to_save = {
+                                "comparisons": comparisons,
+                                "last_rsi_1h": last_rsi_1h
+                            }
+                            with open('rsi_comparisons.json', 'w') as json_file:
+                                json.dump(data_to_save, json_file, indent=4)
 
-                            def save_comparisons_to_json(comparisons, last_rsi_1h):
-                                data_to_save = {
-                                    "comparisons": comparisons,
-                                    "last_rsi_1h": last_rsi_1h
-                                }
-                                with open('rsi_comparisons.json', 'w') as json_file:
-                                    json.dump(data_to_save, json_file, indent=4)
+                        divergence_dict = defaultdict(lambda: defaultdict(list))
+                        for symbol in coins:
+                            def finder_divergences(rsi, hist_data):
+                                divergences = []
+                                close = hist_data['close']
+                                timestamps = hist_data.index.tolist()
+
+                                ignore_count = 4
+
+                                def is_valid_divergence(first_idx, second_idx, first_value, second_value,
+                                                        check_greater=True):
+                                    if first_idx < second_idx:
+                                        for k in range(first_idx + 1, second_idx):
+                                            if check_greater and rsi[k] > second_value:
+                                                return False
+                                            if not check_greater and rsi[k] < second_value:
+                                                return False
+                                    else:
+                                        for k in range(second_idx + 1, first_idx):
+                                            if check_greater and rsi[k] > first_value:
+                                                return False
+                                            if not check_greater and rsi[k] < first_value:
+                                                return False
+                                    return True
+
+                                def is_valid_divergence_close(first_idx, second_idx, first_value, second_value,
+                                                              check_greater=True):
+                                    if first_idx < second_idx:
+                                        for k in range(first_idx + 1, second_idx):
+                                            if check_greater and close[k] > second_value:
+                                                return False
+                                            if not check_greater and close[k] < second_value:
+                                                return False
+                                    else:
+                                        for k in range(second_idx + 1, first_idx):
+                                            if check_greater and close[k] > first_value:
+                                                return False
+                                            if not check_greater and close[k] < first_value:
+                                                return False
+                                    return True
+
+                                for i in range(2, len(rsi) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if rsi[i] > rsi[i - 1] and rsi[i] > rsi[i - 2] and rsi[i] > rsi[i + 1] and rsi[i] > rsi[i + 2]:
+                                        first_rsi_max = rsi[i]
+                                        first_price = close[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений RSI на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(rsi))):
+                                            if rsi[j] > rsi[j - 1] and rsi[j] > rsi[j - 2]:
+                                                second_rsi_max = rsi[j]
+                                                second_price = close[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции и что дивергенция не произошла менее 4 свечей назад
+                                                if j >= 1494 and first_rsi_max > second_rsi_max and first_price < second_price:
+                                                    if is_valid_divergence(i, j, first_rsi_max, second_rsi_max,
+                                                                           check_greater=True):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1494 and first_rsi_max < second_rsi_max and first_price > second_price:
+                                                    if is_valid_divergence(i, j, first_rsi_max, second_rsi_max,
+                                                                           check_greater=False):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(rsi) - 2):
+                                    # Проверяем, является ли текущая точка локальным минимумом
+                                    if rsi[i] < rsi[i - 1] and rsi[i] < rsi[i - 2] and rsi[i] < rsi[i + 1] and rsi[i] < rsi[i + 2]:
+                                        first_rsi_min = rsi[i]
+                                        first_price = close[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений RSI на наличие локальных минимумов
+                                        for j in range(i + 1, min(i + 101, len(rsi))):
+                                            if rsi[j] < rsi[j - 1] and rsi[j] < rsi[j - 2]:
+                                                second_rsi_min = rsi[j]
+                                                second_price = close[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции и что дивергенция не произошла менее 4 свечей назад
+                                                if j >= 1494 and first_rsi_min > second_rsi_min and first_price < second_price:
+                                                    if is_valid_divergence(i, j, first_rsi_min, second_rsi_min,
+                                                                           check_greater=True):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1494 and first_rsi_min < second_rsi_min and first_price > second_price:
+                                                    if is_valid_divergence(i, j, first_rsi_min, second_rsi_min,
+                                                                           check_greater=False):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(close) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if close[i] > close[i - 1] and close[i] > close[i - 2] and close[i] > close[
+                                        i + 1] and close[i] > close[i + 2]:
+                                        first_close_max = close[i]
+                                        first_rsi_value = rsi[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений Close на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(close))):
+                                            if close[j] > close[j - 1] and close[j] > close[j - 2]:
+                                                second_close_max = close[j]
+                                                second_rsi_value = rsi[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции и что дивергенция не произошла менее 4 свечей назад
+                                                if j >= 1494 and first_close_max > second_close_max and first_rsi_value < second_rsi_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max,
+                                                                                 second_close_max, check_greater=True):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1494 and first_close_max < second_close_max and first_rsi_value > second_rsi_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max,
+                                                                                 second_close_max, check_greater=False):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(close) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if close[i] < close[i - 1] and close[i] < close[i - 2] and close[i] < close[
+                                        i + 1] and close[i] < close[i + 2]:
+                                        first_close_max = close[i]
+                                        first_rsi_value = rsi[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений Close на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(close))):
+                                            if close[j] < close[j - 1] and close[j] < close[j - 2]:
+                                                second_close_max = close[j]
+                                                second_rsi_value = rsi[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции и что дивергенция не произошла менее 4 свечей назад
+                                                if j >= 1494 and first_close_max > second_close_max and first_rsi_value < second_rsi_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=True):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1494 and first_close_max < second_close_max and first_rsi_value > second_rsi_value:
+                                                     if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=False):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bullish Divergence'))
+
+                                return divergences
 
 
-                            save_comparisons_to_json(comparisons, last_rsi_1h)
+                            def finder_divergences_macd(macd, hist_data):
+                                divergences = []
+                                close = hist_data['close']
+                                timestamps = hist_data.index.tolist()
+                                ignore_count = 4
+
+                                def is_valid_divergence(first_idx, second_idx, first_value, second_value,
+                                                        check_greater=True):
+                                    if first_idx < second_idx:
+                                        for k in range(first_idx + 1, second_idx):
+                                            if check_greater and macd[k] > second_value:
+                                                return False
+                                            if not check_greater and macd[k] < second_value:
+                                                return False
+                                    else:
+                                        for k in range(second_idx + 1, first_idx):
+                                            if check_greater and macd[k] > first_value:
+                                                return False
+                                            if not check_greater and macd[k] < first_value:
+                                                return False
+                                    return True
+
+                                def is_valid_divergence_close(first_idx, second_idx, first_value, second_value,
+                                                              check_greater=True):
+                                    if first_idx < second_idx:
+                                        for k in range(first_idx + 1, second_idx):
+                                            if check_greater and close[k] > second_value:
+                                                return False
+                                            if not check_greater and close[k] < second_value:
+                                                return False
+                                    else:
+                                        for k in range(second_idx + 1, first_idx):
+                                            if check_greater and close[k] > first_value:
+                                                return False
+                                            if not check_greater and close[k] < first_value:
+                                                return False
+                                    return True
+
+                                for i in range(2, len(macd) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if macd[i] > macd[i - 1] and macd[i] > macd[i - 2] and macd[i] > macd[i + 1] and macd[i] > macd[i + 2]:
+                                        first_macd_max = macd[i]
+                                        first_price = close[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений macd на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(macd))):
+                                            if macd[j] > macd[j - 1] and macd[j] > macd[j - 2]:
+                                                second_macd_max = macd[j]
+                                                second_price = close[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции
+                                                if j >= 1494 and first_macd_max > second_macd_max and first_price < second_price:
+                                                    if is_valid_divergence(i, j, first_macd_max, second_macd_max,
+                                                                           check_greater=True):
+                                                        divergences.append((first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1494 and first_macd_max < second_macd_max and first_price > second_price:
+                                                   if is_valid_divergence(i, j, first_macd_max, second_macd_max,
+                                                                           check_greater=False):
+                                                        divergences.append((first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(macd) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if macd[i] < macd[i - 1] and macd[i] < macd[i - 2] and macd[i] < macd[i + 1] and macd[i] < macd[i + 2]:
+                                        first_macd_min = macd[i]
+                                        first_price = close[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений macd на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(macd))):
+                                            if macd[j] < macd[j - 1] and macd[j] < macd[j - 2]:
+                                                second_macd_min = macd[j]
+                                                second_price = close[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции
+                                                if j >= 1496 and first_macd_min > second_macd_min and first_price < second_price:
+                                                    if is_valid_divergence(i, j, first_macd_min, second_macd_min,
+                                                                           check_greater=True):
+                                                        divergences.append((first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1496 and first_macd_min < second_macd_min and first_price > second_price:
+                                                    if is_valid_divergence(i, j, first_macd_min, second_macd_min,
+                                                                           check_greater=False):
+                                                        divergences.append((first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(close) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if close[i] > close[i - 1] and close[i] > close[i - 2] and close[
+                                        i] > close[
+                                        i + 1] and close[i] > close[i + 2]:
+                                        first_close_max = close[i]
+                                        first_macd_value = macd[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений Close на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(close))):
+                                            if close[j] > close[j - 1] and close[j] > close[j - 2]:
+                                                second_close_max = close[j]
+                                                second_macd_value = macd[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции и что дивергенция не произошла менее 4 свечей назад
+                                                if j >= 1494 and first_close_max > second_close_max and first_macd_value < second_macd_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=True):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1494 and first_close_max < second_close_max and first_macd_value > second_macd_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=False):
+                                                        divergences.append(
+                                                        (first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(close) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if close[i] < close[i - 1] and close[i] < close[i - 2] and close[
+                                        i] < close[
+                                        i + 1] and close[i] < close[i + 2]:
+                                        first_close_max = close[i]
+                                        first_macd_value = macd[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений Close на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(close))):
+                                            if close[j] < close[j - 1] and close[j] < close[j - 2]:
+                                                second_close_max = close[j]
+                                                second_macd_value = macd[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции и что дивергенция не произошла менее 4 свечей назад
+                                                if j >= 1494 and first_close_max > second_close_max and first_macd_value < second_macd_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=True):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1494 and first_close_max < second_close_max and first_macd_value > second_macd_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=False):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bullish Divergence'))
+
+                                                # Продолжаем поиск "вторых" точек
+                                return divergences
 
 
-                    def collect_stoch_data(tv, symbol, exchange, timeframes, n_bars):
-                        stoch_dictionaries = {}  # Словарь для сохранения значений %K и %D для каждого таймфрейма
+                            def finder_divergences_macd_k(signal, hist_data):
+                                divergences = []
+                                close = hist_data['close']
+                                timestamps = hist_data.index.tolist()
+                                ignore_count = 4
 
+                                def is_valid_divergence(first_idx, second_idx, first_value, second_value,
+                                                        check_greater=True):
+                                    if first_idx < second_idx:
+                                        for k in range(first_idx + 1, second_idx):
+                                            if check_greater and signal[k] > second_value:
+                                                return False
+                                            if not check_greater and signal[k] < second_value:
+                                                return False
+                                    else:
+                                        for k in range(second_idx + 1, first_idx):
+                                            if check_greater and signal[k] > first_value:
+                                                return False
+                                            if not check_greater and signal[k] < first_value:
+                                                return False
+                                    return True
+
+                                def is_valid_divergence_close(first_idx, second_idx, first_value, second_value,
+                                                              check_greater=True):
+                                    if first_idx < second_idx:
+                                        for k in range(first_idx + 1, second_idx):
+                                            if check_greater and close[k] > second_value:
+                                                return False
+                                            if not check_greater and close[k] < second_value:
+                                                return False
+                                    else:
+                                        for k in range(second_idx + 1, first_idx):
+                                            if check_greater and close[k] > first_value:
+                                                return False
+                                            if not check_greater and close[k] < first_value:
+                                                return False
+                                    return True
+
+                                for i in range(2, len(signal) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if signal[i] > signal[i - 1] and signal[i] > signal[i - 2] and signal[i] > signal[i + 1] and signal[i] > signal[i + 2]:
+                                        first_signal_max = signal[i]
+                                        first_price = close[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений signal на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(signal))):
+                                            if signal[j] > signal[j - 1] and signal[j] > signal[j - 2]:
+                                                second_signal_max = signal[j]
+                                                second_price = close[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции
+                                                if j >= 1496 and first_signal_max > second_signal_max and first_price < second_price:
+                                                    if is_valid_divergence(i, j, first_signal_max, second_signal_max,
+                                                                           check_greater=True):
+                                                        divergences.append((first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1496 and first_signal_max < second_signal_max and first_price > second_price:
+                                                    if is_valid_divergence(i, j, first_signal_max, second_signal_max,
+                                                                           check_greater=False):
+                                                        divergences.append((first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(signal) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if signal[i] < signal[i - 1] and signal[i] < signal[i - 2] and signal[i] < signal[i + 1] and signal[i] < signal[i + 2]:
+                                        first_signal_min = signal[i]
+                                        first_price = close[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений signal на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(signal))):
+                                            if signal[j] < signal[j - 1] and signal[j] < signal[j - 2]:
+                                                second_signal_min = signal[j]
+                                                second_price = close[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции
+                                                if j >= 1494 and first_signal_min > second_signal_min and first_price < second_price:
+                                                    if is_valid_divergence(i, j, first_signal_min, second_signal_min,
+                                                                           check_greater=True):
+                                                        divergences.append((first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1494 and first_signal_min < second_signal_min and first_price > second_price:
+                                                    if is_valid_divergence(i, j, first_signal_min, second_signal_min,
+                                                                           check_greater=False):
+                                                        divergences.append((first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(close) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if close[i] > close[i - 1] and close[i] > close[i - 2] and close[i] > close[
+                                        i + 1] and close[i] > close[i + 2]:
+                                        first_close_max = close[i]
+                                        first_signal_value = signal[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений Close на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(close))):
+                                            if close[j] > close[j - 1] and close[j] > close[j - 2]:
+                                                second_close_max = close[j]
+                                                second_signal_value = signal[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции и что дивергенция не произошла менее 4 свечей назад
+                                                if j >= 1494 and first_close_max > second_close_max and first_signal_value < second_signal_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=True):
+                                                        divergences.append(
+                                                             (first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1494 and first_close_max < second_close_max and first_signal_value > second_signal_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=False):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(close) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if close[i] < close[i - 1] and close[i] < close[i - 2] and close[i] < close[
+                                        i + 1] and close[i] < close[i + 2]:
+                                        first_close_max = close[i]
+                                        first_signal_value = signal[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений Close на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(close))):
+                                            if close[j] < close[j - 1] and close[j] < close[j - 2]:
+                                                second_close_max = close[j]
+                                                second_signal_value = signal[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции и что дивергенция не произошла менее 4 свечей назад
+                                                if j >= 1494 and first_close_max > second_close_max and first_signal_value < second_signal_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=True):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1494 and first_close_max < second_close_max and first_signal_value > second_signal_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=False):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bullish Divergence'))
+                                return divergences
+
+
+                            def finder_divergences_obv(obv, hist_data):
+                                divergences = []
+                                close = hist_data['close']
+                                timestamps = hist_data.index.tolist()
+                                ignore_count = 4
+
+                                def is_valid_divergence(first_idx, second_idx, first_value, second_value,
+                                                        check_greater=True):
+                                    if first_idx < second_idx:
+                                        for k in range(first_idx + 1, second_idx):
+                                            if check_greater and obv[k] > second_value:
+                                                return False
+                                            if not check_greater and obv[k] < second_value:
+                                                return False
+                                    else:
+                                        for k in range(second_idx + 1, first_idx):
+                                            if check_greater and obv[k] > first_value:
+                                                return False
+                                            if not check_greater and obv[k] < first_value:
+                                                return False
+                                    return True
+
+                                def is_valid_divergence_close(first_idx, second_idx, first_value, second_value,
+                                                              check_greater=True):
+                                    if first_idx < second_idx:
+                                        for k in range(first_idx + 1, second_idx):
+                                            if check_greater and close[k] > second_value:
+                                                return False
+                                            if not check_greater and close[k] < second_value:
+                                                return False
+                                    else:
+                                        for k in range(second_idx + 1, first_idx):
+                                            if check_greater and close[k] > first_value:
+                                                return False
+                                            if not check_greater and close[k] < first_value:
+                                                return False
+                                    return True
+
+                                for i in range(2, len(obv) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if obv[i] > obv[i - 1] and obv[i] > obv[i - 2] and obv[i] > obv[i + 1] and obv[i] > obv[i + 2]:
+                                        first_obv_max = obv[i]
+                                        first_price = close[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений obv на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(obv))):
+                                            if obv[j] > obv[j - 1] and obv[j] > obv[j - 2]:
+                                                second_obv_max = obv[j]
+                                                second_price = close[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции
+                                                if j >= 1496 and first_obv_max > second_obv_max and first_price < second_price:
+                                                    if is_valid_divergence(i, j, first_obv_max, second_obv_max,
+                                                                           check_greater=True):
+                                                        divergences.append((first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1496 and first_obv_max < second_obv_max and first_price > second_price:
+                                                    if is_valid_divergence(i, j, first_obv_max, second_obv_max,
+                                                                           check_greater=False):
+                                                        divergences.append((first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(obv) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if obv[i] < obv[i - 1] and obv[i] < obv[i - 2] and obv[i] < obv[i + 1] and obv[i] < obv[i + 2]:
+                                        first_obv_min = obv[i]
+                                        first_price = close[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений obv на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(obv))):
+                                            if obv[j] < obv[j - 1] and obv[j] < obv[j - 2]:
+                                                second_obv_min = obv[j]
+                                                second_price = close[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции
+                                                if j >= 1496 and first_obv_min > second_obv_min and first_price < second_price:
+                                                    if is_valid_divergence(i, j, first_obv_min, second_obv_min,
+                                                                           check_greater=True):
+                                                        divergences.append((first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1496 and first_obv_min < second_obv_min and first_price > second_price:
+                                                    if is_valid_divergence(i, j, first_obv_min, second_obv_min,
+                                                                           check_greater=False):
+                                                        divergences.append((first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(close) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if close[i] > close[i - 1] and close[i] > close[i - 2] and close[i] > close[
+                                        i + 1] and close[i] > close[i + 2]:
+                                        first_close_max = close[i]
+                                        first_obv_value = obv[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений Close на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(close))):
+                                            if close[j] > close[j - 1] and close[j] > close[j - 2]:
+                                                second_close_max = close[j]
+                                                second_obv_value = obv[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции и что дивергенция не произошла менее 4 свечей назад
+                                                if j >= 1494 and first_close_max > second_close_max and first_obv_value < second_obv_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=True):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1494 and first_close_max < second_close_max and first_obv_value > second_obv_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=False):
+                                                        divergences.append(
+                                                         (first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(close) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if close[i] < close[i - 1] and close[i] < close[i - 2] and close[i] < close[
+                                        i + 1] and close[i] < close[i + 2]:
+                                        first_close_max = close[i]
+                                        first_obv_value = obv[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений Close на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(close))):
+                                            if close[j] < close[j - 1] and close[j] < close[j - 2]:
+                                                second_close_max = close[j]
+                                                second_obv_value = obv[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции и что дивергенция не произошла менее 4 свечей назад
+                                                if j >= 1494 and first_close_max > second_close_max and first_obv_value < second_obv_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=True):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1494 and first_close_max < second_close_max and first_obv_value > second_obv_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=False):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bullish Divergence'))
+                                return divergences
+
+                            def finder_divergences_stoch_k(k, hist_data):
+                                divergences = []
+                                close = hist_data['close']
+                                timestamps = hist_data.index.tolist()
+                                ignore_count = 4
+
+                                def is_valid_divergence(first_idx, second_idx, first_value, second_value,
+                                                        check_greater=True):
+                                    if first_idx < second_idx:
+                                        for r in range(first_idx + 1, second_idx):
+                                            if check_greater and k[r] > second_value:
+                                                return False
+                                            if not check_greater and k[r] < second_value:
+                                                return False
+                                    else:
+                                        for r in range(second_idx + 1, first_idx):
+                                            if check_greater and k[r] > first_value:
+                                                return False
+                                            if not check_greater and k[r] < first_value:
+                                                return False
+                                    return True
+
+                                def is_valid_divergence_close(first_idx, second_idx, first_value, second_value,
+                                                              check_greater=True):
+                                    if first_idx < second_idx:
+                                        for k in range(first_idx + 1, second_idx):
+                                            if check_greater and close[k] > second_value:
+                                                return False
+                                            if not check_greater and close[k] < second_value:
+                                                return False
+                                    else:
+                                        for k in range(second_idx + 1, first_idx):
+                                            if check_greater and close[k] > first_value:
+                                                return False
+                                            if not check_greater and close[k] < first_value:
+                                                return False
+                                    return True
+
+                                for i in range(2, len(k) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if k[i] > k[i - 1] and k[i] > k[i - 2] and k[i] > k[i + 1] and k[i] > k[i + 2]:
+                                        first_k_max = k[i]
+                                        first_price = close[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений k на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(k))):
+                                            if k[j] > k[j - 1] and k[j] > k[j - 2]:
+                                                second_k_max = k[j]
+                                                second_price = close[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции
+                                                if j >= 1495 and first_k_max > second_k_max and first_price < second_price:
+                                                    if is_valid_divergence(i, j, first_k_max, second_k_max,
+                                                                           check_greater=True):
+                                                        divergences.append((first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1496 and first_k_max < second_k_max and first_price > second_price:
+                                                    if is_valid_divergence(i, j, first_k_max, second_k_max,
+                                                                           check_greater=False):
+                                                        divergences.append((first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(k) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if k[i] < k[i - 1] and k[i] < k[i - 2] and k[i] < k[i + 1] and k[i] < k[i + 2]:
+                                        first_k_min = k[i]
+                                        first_price = close[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений k на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(k))):
+                                            if k[j] < k[j - 1] and k[j] < k[j - 2]:
+                                                second_k_min = k[j]
+                                                second_price = close[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции
+                                                if j >= 1495 and first_k_min > second_k_min and first_price < second_price:
+                                                    if is_valid_divergence(i, j, first_k_min, second_k_min,
+                                                                           check_greater=True):
+                                                        divergences.append((first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1495 and first_k_min < second_k_min and first_price > second_price:
+                                                    if is_valid_divergence(i, j, first_k_min, second_k_min,
+                                                                           check_greater=False):
+                                                        divergences.append((first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(close) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if close[i] > close[i - 1] and close[i] > close[i - 2] and close[i] > close[
+                                        i + 1] and close[i] > close[i + 2]:
+                                        first_close_max = close[i]
+                                        first_k_value = k[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений Close на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(close))):
+                                            if close[j] > close[j - 1] and close[j] > close[j - 2]:
+                                                second_close_max = close[j]
+                                                second_k_value = k[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции и что дивергенция не произошла менее 4 свечей назад
+                                                if j >= 1494 and first_close_max > second_close_max and first_k_value < second_k_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=True):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1494 and first_close_max < second_close_max and first_k_value > second_k_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=False):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(close) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if close[i] < close[i - 1] and close[i] < close[i - 2] and close[i] < close[
+                                        i + 1] and close[i] < close[i + 2]:
+                                        first_close_max = close[i]
+                                        first_k_value = k[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений Close на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(close))):
+                                            if close[j] < close[j - 1] and close[j] < close[j - 2]:
+                                                second_close_max = close[j]
+                                                second_k_value = k[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции и что дивергенция не произошла менее 4 свечей назад
+                                                if j >= 1494 and first_close_max > second_close_max and first_k_value < second_k_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=True):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1494 and first_close_max < second_close_max and first_k_value > second_k_value:
+                                                    if is_valid_divergence_close(i, j, first_close_max, second_close_max,
+                                                                           check_greater=False):
+                                                        divergences.append(
+                                                            (first_time, second_time, 'Bullish Divergence'))
+                                return divergences
+
+                            def finder_divergences_stoch_d(d, hist_data):
+                                divergences = []
+                                close = hist_data['close']
+                                timestamps = hist_data.index.tolist()
+                                ignore_count = 4
+
+                                def is_valid_divergence(first_idx, second_idx, first_value, second_value,
+                                                        check_greater=True):
+                                    if first_idx < second_idx:
+                                        for r in range(first_idx + 1, second_idx):
+                                            if check_greater and d[r] > second_value:
+                                                return False
+                                            if not check_greater and d[r] < second_value:
+                                                return False
+                                    else:
+                                        for r in range(second_idx + 1, first_idx):
+                                            if check_greater and d[r] > first_value:
+                                                return False
+                                            if not check_greater and d[r] < first_value:
+                                                return False
+                                    return True
+
+                                def is_valid_divergence_close(first_idx, second_idx, first_value, second_value,
+                                                              check_greater=True):
+                                    if first_idx < second_idx:
+                                        for k in range(first_idx + 1, second_idx):
+                                            if check_greater and close[k] > second_value:
+                                                return False
+                                            if not check_greater and close[k] < second_value:
+                                                return False
+                                    else:
+                                        for k in range(second_idx + 1, first_idx):
+                                            if check_greater and close[k] > first_value:
+                                                return False
+                                            if not check_greater and close[k] < first_value:
+                                                return False
+                                    return True
+
+                                for i in range(2, len(d) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if d[i] > d[i - 1] and d[i] > d[i - 2] and d[i] > d[i + 1] and d[i] > d[i + 2]:
+                                        first_d_max = d[i]
+                                        first_price = close[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений d на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(d))):
+                                            if d[j] > d[j - 1] and d[j] > d[j - 2]:
+                                                second_d_max = d[j]
+                                                second_price = close[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции
+                                                if j >= 1496 and first_d_max > second_d_max and first_price < second_price:
+                                                    if is_valid_divergence(i, j, first_d_max, second_d_max,
+                                                                           check_greater=True):
+                                                        divergences.append((first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1496 and first_d_max < second_d_max and first_price > second_price:
+                                                    if is_valid_divergence(i, j, first_d_max, second_d_max,
+                                                                           check_greater=False):
+                                                        divergences.append((first_time, second_time, 'Bullish Divergence'))
+
+                                for i in range(2, len(d) - 2):
+                                    # Проверяем, является ли текущая точка локальным максимумом
+                                    if d[i] < d[i - 1] and d[i] < d[i - 2] and d[i] < d[i + 1] and d[i] < d[i + 2]:
+                                        first_d_min = d[i]
+                                        first_price = close[i]
+                                        first_time = timestamps[i]
+
+                                        # Проверяем следующие 100 значений d на наличие локальных максимумов
+                                        for j in range(i + 1, min(i + 101, len(d))):
+                                            if d[j] < d[j - 1] and d[j] < d[j - 2]:
+                                                second_d_min = d[j]
+                                                second_price = close[j]
+                                                second_time = timestamps[j]
+
+                                                # Проверяем условия для дивергенции
+                                                if j >= 1496 and first_d_min > second_d_min and first_price < second_price:
+                                                    if is_valid_divergence(i, j, first_d_min, second_d_min,
+                                                                           check_greater=True):
+                                                        divergences.append((first_time, second_time, 'Bearish Divergence'))
+                                                elif j >= 1496 and first_d_min < second_d_min and first_price > second_price:
+                                                    if is_valid_divergence(i, j, first_d_min, second_d_min,
+                                                                           check_greater=False):
+                                                        divergences.append((first_time, second_time, 'Bullish Divergence'))
+                                return divergences
+
+
+                            timeframes = [Interval.in_4_hour, Interval.in_2_hour, Interval.in_1_hour,
+                                          Interval.in_30_minute,
+                                          Interval.in_15_minute]
+
+                            for timeframe in timeframes:
+                                hist_data = tv.get_hist(symbol, exchange, timeframe, n_bars)
+
+                            timeframes = [Interval.in_4_hour, Interval.in_2_hour, Interval.in_1_hour,
+                                          Interval.in_30_minute,
+                                          Interval.in_15_minute]
+
+                            last_divergences_rsi = {}
+                            last_divergences_macd = {}
+                            last_divergences_macd_k = {}
+                            last_divergences_obv = {}
+                            last_divergences_stoch_k = {}
+                            last_divergences_stoch_d = {}
+
+                            for timeframe in timeframes:
+                                hist_data = tv.get_hist(symbol, exchange, timeframe, n_bars)
+                                timestamps = hist_data.index.tolist()  # Список меток времени
+
+                                if hist_data is not None and not hist_data.empty:
+                                    # Расчет RSI и MACD
+                                    rsi = tv.calculate_rsi(hist_data)
+                                    macd, signal, _ = tv.calculate_macd(hist_data)
+                                    obv = tv.calculate_obv_ema(hist_data)
+                                    k, d = tv.calculate_st(hist_data)
+                                    close = hist_data['close']
+                                    volume = hist_data["volume"].tolist()
+                                    timestamps = hist_data.index.tolist()
+
+                                    # Находим дивергенции RSI
+                                    divergences_rsi = finder_divergences(rsi, hist_data)
+                                    if divergences_rsi:
+                                        divergences_rsi.sort(key=lambda x: x[1])
+                                        last_divergences_rsi[timeframe] = divergences_rsi[-1]
+                                    else:
+                                        last_divergences_rsi[timeframe] = None
+
+                                    # Находим дивергенции MACD
+                                    divergences_macd = finder_divergences_macd(macd, hist_data)
+                                    if divergences_macd:
+                                        divergences_macd.sort(key=lambda x: x[1])
+                                        last_divergences_macd[timeframe] = divergences_macd[-1]
+                                    else:
+                                        last_divergences_macd[timeframe] = None
+
+                                    divergences_macd_k = finder_divergences_macd_k(signal, hist_data)
+                                    if divergences_macd_k:
+                                        divergences_macd_k.sort(key=lambda x: x[1])
+                                        last_divergences_macd_k[timeframe] = divergences_macd_k[-1]
+                                    else:
+                                        last_divergences_macd_k[timeframe] = None
+
+                                    divergences_obv = finder_divergences_obv(obv, hist_data)
+                                    if divergences_obv:
+                                        divergences_obv.sort(key=lambda x: x[1])
+                                        last_divergences_obv[timeframe] = divergences_obv[-1]
+                                    else:
+                                        last_divergences_obv[timeframe] = None
+
+                                    divergences_stoch_k = finder_divergences_stoch_k(k, hist_data)
+                                    if divergences_stoch_k:
+                                        divergences_stoch_k.sort(key=lambda x: x[1])
+                                        last_divergences_stoch_k[timeframe] = divergences_stoch_k[-1]
+                                    else:
+                                        last_divergences_stoch_k[timeframe] = None
+
+                                    # divergences_stoch_d = finder_divergences_stoch_d(d, hist_data)
+                                    # if divergences_stoch_d:
+                                    #     divergences_stoch_d.sort(key=lambda x: x[1])
+                                    #     last_divergences_stoch_d[timeframe] = divergences_stoch_d[-1]
+                                    # else:
+                                    #     last_divergences_stoch_d[timeframe] = None
+
+                            # Объединяем дивергенции RSI и MACD
+                            for timeframe, divergence in last_divergences_rsi.items():
+                                if divergence:
+                                    divergence_type = divergence[2]
+                                    divergence_data = {
+                                        "indicator": "RSI",
+                                        "timeframe": str(timeframe),
+                                        "first_time": divergence[0].isoformat(),
+                                        "second_time": divergence[1].isoformat(),
+                                        "type": divergence_type
+                                    }
+                                    divergence_dict[symbol][divergence_type].append(divergence_data)
+
+                            for timeframe, divergence in last_divergences_macd.items():
+                                if divergence:
+                                    divergence_type = divergence[2]
+                                    divergence_data = {
+                                        "indicator": "MACD",
+                                        "timeframe": str(timeframe),
+                                        "first_time": divergence[0].isoformat(),
+                                        "second_time": divergence[1].isoformat(),
+                                        "type": divergence_type
+                                    }
+                                    divergence_dict[symbol][divergence_type].append(divergence_data)
+
+                            for timeframe, divergence in last_divergences_macd_k.items():
+                                if divergence:
+                                    divergence_type = divergence[2]
+                                    divergence_data = {
+                                        "indicator": "MACD_K",
+                                        "timeframe": str(timeframe),
+                                        "first_time": divergence[0].isoformat(),
+                                        "second_time": divergence[1].isoformat(),
+                                        "type": divergence_type
+                                    }
+                                    divergence_dict[symbol][divergence_type].append(divergence_data)
+
+                            for timeframe, divergence in last_divergences_obv.items():
+                                if divergence:
+                                    divergence_type = divergence[2]
+                                    divergence_data = {
+                                        "indicator": "OBV",
+                                        "timeframe": str(timeframe),
+                                        "first_time": divergence[0].isoformat(),
+                                        "second_time": divergence[1].isoformat(),
+                                        "type": divergence_type
+                                    }
+                                    divergence_dict[symbol][divergence_type].append(divergence_data)
+
+                            for timeframe, divergence in last_divergences_stoch_k.items():
+                                if divergence:
+                                    divergence_type = divergence[2]
+                                    divergence_data = {
+                                        "indicator": "STOCH",
+                                        "timeframe": str(timeframe),
+                                        "first_time": divergence[0].isoformat(),
+                                        "second_time": divergence[1].isoformat(),
+                                        "type": divergence_type
+                                    }
+                                    divergence_dict[symbol][divergence_type].append(divergence_data)
+
+                            # for timeframe, divergence in last_divergences_stoch_d.items():
+                            #     if divergence:
+                            #         divergence_type = divergence[2]
+                            #         divergence_data = {
+                            #             "indicator": "STOCH_D",
+                            #             "timeframe": str(timeframe),
+                            #             "first_time": divergence[0].isoformat(),
+                            #             "second_time": divergence[1].isoformat(),
+                            #             "type": divergence_type
+                            #         }
+                            #         divergence_dict[divergence_type].append(divergence_data)
+
+                            # Сохраняем данные в файл JSON
+                            with open('divergences.json', 'w') as json_file:
+                                json.dump(divergence_dict, json_file, indent=4)
+
+
+                        def finder_divergences_stoch(d_values, close, neighborhood=2):
+                            divergence_points = []
+                            # Поиск выдающихся точек в d_values
+                            for i in range(neighborhood, len(d_values) - neighborhood):
+                                local_d_values = d_values.iloc[i - neighborhood:i + neighborhood + 1]
+                                local_max = local_d_values.max()
+                                local_min = local_d_values.min()
+
+                                if d_values.iloc[i] == local_max or d_values.iloc[i] == local_min:
+                                    # Поиск последовательности дивергенций
+                                    sequence = [{'index': i, 'd_values': d_values.iloc[i], 'close': close.iloc[i]}]
+                                    last_extreme = d_values.iloc[i]
+
+                                    # Определяем направление дивергенции
+                                    looking_for_higher = (
+                                            d_values.iloc[i] == local_min)  # Ищем выше, если текущая точка - минимум
+                                    looking_for_lower = not looking_for_higher
+
+                                    for j in range(i + neighborhood, len(d_values) - neighborhood):
+                                        next_local_d_values = d_values.iloc[j - neighborhood:j + neighborhood + 1]
+                                        next_local_max = next_local_d_values.max()
+                                        next_local_min = next_local_d_values.min()
+
+                                        # Находим следующую крайнюю точку
+                                        if (d_values.iloc[j] == next_local_max or d_values.iloc[j] == next_local_min):
+                                            if ((looking_for_higher and d_values.iloc[j] > last_extreme) or
+                                                    (looking_for_lower and d_values.iloc[j] < last_extreme)):
+                                                # Проверяем на дивергенцию
+                                                if (sequence[-1]['d_values'] > d_values.iloc[j] and sequence[-1]['close'] <
+                                                    close.iloc[j]) or \
+                                                        (sequence[-1]['d_values'] < d_values.iloc[j] and sequence[-1][
+                                                            'close'] > close.iloc[j]):
+                                                    sequence.append(
+                                                        {'index': j, 'd_values': d_values.iloc[j], 'close': close.iloc[j]})
+                                                    last_extreme = d_values.iloc[j]  # Обновляем последнюю крайнюю точку
+
+                                                    # Продолжаем цикл до тех пор, пока условие прерывания не выполнится
+                                                    continue
+                                            break  # Нарушение условия продолжения цикла
+
+                                    # Сохраняем найденные дивергенции, если длина последовательности больше 1
+                                    if len(sequence) > 1:
+                                        for k in range(1, len(sequence)):
+                                            divergence_points.append({
+                                                'first_time': d_values.index[sequence[k - 1]['index']],
+                                                'second_time': d_values.index[sequence[k]['index']],
+                                                'first_d_values': sequence[k - 1]['d_values'],
+                                                'second_d_values': sequence[k]['d_values'],
+                                                'first_close': sequence[k - 1]['close'],
+                                                'second_close': sequence[k]['close']
+                                            })
+                            return divergence_points
+
+                        def finder_divergences_stoch_k(k_values, close, neighborhood=2):
+                            divergence_points = []
+                            # Поиск выдающихся точек в k_values
+                            for i in range(neighborhood, len(k_values) - neighborhood):
+                                local_k_values = k_values.iloc[i - neighborhood:i + neighborhood + 1]
+                                local_max = local_k_values.max()
+                                local_min = local_k_values.min()
+
+                                if k_values.iloc[i] == local_max or k_values.iloc[i] == local_min:
+                                    # Поиск последовательности дивергенций
+                                    sequence = [{'index': i, 'k_values': k_values.iloc[i], 'close': close.iloc[i]}]
+                                    last_extreme = k_values.iloc[i]
+
+                                    # Определяем направление дивергенции
+                                    looking_for_higher = (
+                                            k_values.iloc[i] == local_min)  # Ищем выше, если текущая точка - минимум
+                                    looking_for_lower = not looking_for_higher
+
+                                    for j in range(i + neighborhood, len(k_values) - neighborhood):
+                                        next_local_k_values = k_values.iloc[j - neighborhood:j + neighborhood + 1]
+                                        next_local_max = next_local_k_values.max()
+                                        next_local_min = next_local_k_values.min()
+
+                                        # Находим следующую крайнюю точку
+                                        if (k_values.iloc[j] == next_local_max or k_values.iloc[j] == next_local_min):
+                                            if ((looking_for_higher and k_values.iloc[j] > last_extreme) or
+                                                    (looking_for_lower and k_values.iloc[j] < last_extreme)):
+                                                # Проверяем на дивергенцию
+                                                if (sequence[-1]['k_values'] > k_values.iloc[j] and sequence[-1]['close'] <
+                                                    close.iloc[j]) or \
+                                                        (sequence[-1]['k_values'] < k_values.iloc[j] and sequence[-1][
+                                                            'close'] > close.iloc[j]):
+                                                    sequence.append(
+                                                        {'index': j, 'k_values': k_values.iloc[j], 'close': close.iloc[j]})
+                                                    last_extreme = k_values.iloc[j]  # Обновляем последнюю крайнюю точку
+
+                                                    # Продолжаем цикл до тех пор, пока условие прерывания не выполнится
+                                                    continue
+                                            break  # Нарушение условия продолжения цикла
+
+                                    # Сохраняем найденные дивергенции, если длина последовательности больше 1
+                                    if len(sequence) > 1:
+                                        for k in range(1, len(sequence)):
+                                            divergence_points.append({
+                                                'first_time': k_values.index[sequence[k - 1]['index']],
+                                                'second_time': k_values.index[sequence[k]['index']],
+                                                'first_k_values': sequence[k - 1]['k_values'],
+                                                'second_k_values': sequence[k]['k_values'],
+                                                'first_close': sequence[k - 1]['close'],
+                                                'second_close': sequence[k]['close']
+                                            })
+                            return divergence_points
+
+
+                        timeframes = [Interval.in_4_hour, Interval.in_2_hour, Interval.in_1_hour, Interval.in_30_minute,
+                                      Interval.in_15_minute]
+
+                        # Словарь для хранения последней дивергенции на каждом таймфрейме
+                        last_divergences = {}
+                        last_divergences_k = {}
                         for timeframe in timeframes:
-                            # Получение исторических данных для данного таймфрейма
                             hist_data = tv.get_hist(symbol, exchange, timeframe, n_bars)
 
+                            v_k, v_d = tv.calculate_st(hist_data)
+
+                            print("K", {v_k[-1]}, "D", {v_d[-1]})
+
                             if hist_data is not None and not hist_data.empty:
-                                # Расчет стохастического осциллятора
-                                k, d = tv.calculate_st(hist_data)
+                                # Расчет macd
+                                last_stoch_values, k_values, d_values = plot_stochastic_oscillator(stoch_data, timeframes)
+                                timestamps = timestamps[:len(k_values)]
+                                k_values = pd.Series(v_k, index=timestamps)
+                                d_values = pd.Series(v_d, index=timestamps)
+                                # Получение данных о закрытии
+                                close = hist_data['close']
 
-                                if k is not None and not k.empty and d is not None and not d.empty:
-                                    # Сохранение значений %K и %D в словарь для текущего таймфрейма
-                                    stoch_dictionaries[timeframe] = {
-                                        'k_values': k.iloc[-50:].to_dict(),  # Сохраняем последние 5 значений %K
-                                        'd_values': d.iloc[-50:].to_dict()  # Сохраняем последние 5 значений %D
-                                    }
+                                # Находим дивергенцииё
+                                divergences = finder_divergences_stoch(d_values, close)
+
+                                divergences_k = finder_divergences_stoch_k(k_values, close)
+
+                                if divergences:
+                                    # Сохраняем последнюю найденную дивергенцию
+                                    last_divergences[timeframe] = divergences[-1]
+                                else:
+                                    last_divergences[timeframe] = None
+
+                                if divergences_k:
+                                    # Сохраняем последнюю найденную дивергенцию
+                                    last_divergences_k[timeframe] = divergences_k[-1]
+                                else:
+                                    last_divergences_k[timeframe] = None
+
+                        # Вывод результатов
+                        for timeframe, divergence in last_divergences.items():
+                            if divergence:
+                                print(f"Последняя дивергенция на таймфрейме {timeframe}:\n{divergence}")
                             else:
-                                print(f"No historical data available for {timeframe}")
+                                print(f"На таймфрейме {timeframe} дивергенции не найдены.")
 
-                        return stoch_dictionaries
-
-
-                    def compare_stoch_values(stoch_dictionaries):
-                        comparisons = {}
-                        for timeframe, data in stoch_dictionaries.items():
-                            last_k = list(data['k_values'].values())[-1]
-                            last_d = list(data['d_values'].values())[-1]
-
-                            # Сравнение %K и %D
-                            comparison_key = f"%K > %D in {timeframe}"
-                            comparisons[comparison_key] = last_k > last_d
-
-                        return comparisons
-
-
-                    timeframes = [Interval.in_15_minute, Interval.in_30_minute, Interval.in_1_hour, Interval.in_2_hour, Interval.in_4_hour]
-                    n_bars = 200  # Количество баров для анализа
-                    stoch_data = collect_stoch_data(tv, "BTCUSDT", "BINANCE", timeframes, n_bars)
-                    stoch_comparisons = compare_stoch_values(stoch_data)
-                    print(stoch_comparisons)
-
-                    def plot_stochastic_oscillator(stoch_dictionaries, timeframes):
-                        fig, ax = plt.subplots(figsize=(12, 8))
-                        colors_k = ['red', 'blue', 'green', 'purple']
-                        colors_d = ['#FF6347', '#4682B4', '#32CD32', '#800080']
-
-                        # Словарь для сохранения последних значений %K и %D для Interval.in_1_hour
-                        last_values = {}
-
-                        for timeframe, color_k, color_d in zip(timeframes, colors_k, colors_d):
-                            data = stoch_dictionaries.get(timeframe)
-                            if data:
-                                k_values = list(data['k_values'].values())
-                                d_values = list(data['d_values'].values())
-                                dates = list(data['k_values'].keys())
-
-                                if symbol == "BTCUSDT":
-
-                                    if timeframe == Interval.in_1_hour:  # Указываем интересующий интервал
-                                        last_values['last_k'] = k_values[-1]
-                                        last_values['last_d'] = d_values[-1]
-
-                                ax.plot(dates, k_values, label=f'%K {timeframe}', color=color_k)
-                                ax.plot(dates, d_values, label=f'%D {timeframe}', color=color_d)
-
-                        ax.set_title('Stochastic Oscillator Across Different Timeframes')
-                        ax.legend(loc='upper left')
-                        plt.show()
-
-                        return last_values
-
-
-                    if symbol == "BTCUSDT":
-                        last_stoch_values = plot_stochastic_oscillator(stoch_data, timeframes)
-
-                        # Включение последних значений в JSON для сохранения
-                        stoch_comparisons['last_values'] = last_stoch_values
-
-                        with open('stoch_comparisons.json', 'w') as json_file:
-                            json.dump(stoch_comparisons, json_file, indent=4)
 
                     if symbol == "BTCUSDT":
 
@@ -1930,20 +2632,11 @@ while True:
 
                             hull_color = get_hull_color(HULL)
 
-                            # Построение графика с использованием matplotlib
-                            plt.figure(figsize=(14, 7))
-                            plt.plot(close.index, HULL, label='Hull MA', color='black')  # Линия тренда
-                            for i in range(2, len(HULL)):
-                                plt.plot(close.index[i - 2:i], HULL[i - 2:i], color=hull_color[i], linewidth=2)
-
-                            plt.title('Hull Suite by InSilico')
-                            plt.legend()
-                            plt.show()
 
                             # Вывод текущего цвета
 
-                    with open('current_colors.json', 'w') as json_file:
-                        json.dump(current_values, json_file, indent=4)
+                        with open('current_colors.json', 'w') as json_file:
+                            json.dump(current_values, json_file, indent=4)
 
                     mfi_values = tv.plot_mfi_over_timeframes(timeframes, symbol, exchange, n_bars, tv)
 
@@ -1960,7 +2653,6 @@ while True:
                                 comparisons[f"MACD > Signal in {timeframe.value}"] = bool(macd_above_signal)  # Преобразование в bool
                         return comparisons
 
-
                     # Пример использования
                     # Предполагаем, что data — это словарь, где ключи — это Interval, а значения — это DataFrame с данными по ценам
                     timeframes = [Interval.in_15_minute, Interval.in_30_minute, Interval.in_1_hour, Interval.in_2_hour, Interval.in_4_hour]
@@ -1972,6 +2664,47 @@ while True:
                     if symbol == "BTCUSDT":
                         with open('macd_comparisons.json', 'w') as json_file:
                             json.dump(macd_comparisons, json_file, indent=4)
+
+                    hist_data = tv.get_hist(symbol, exchange, interval, n_bars)
+
+                    # Преобразование данных в DataFrame
+                    data = pd.DataFrame({
+                        'close': hist_data['close'],
+                        'high': hist_data['high'],
+                        'low': hist_data['low'],
+                        'open': hist_data['open'],
+                        'volume': hist_data['volume']
+                    }, index=hist_data.index)
+
+
+                    # Функция расчета EMA
+                    def calculate_ema(prices, period):
+                        ema_values = []
+                        alpha = 2 / (period + 1)
+                        ema_values.append(prices[0])  # Инициализация с первым значением цены
+
+                        for price in prices[1:]:
+                            ema_values.append(alpha * price + (1 - alpha) * ema_values[-1])
+
+                        return pd.Series(ema_values, index=prices.index)
+
+
+                    # Расчет EMA для периодов 20, 50, 100, и 200
+                    ema_20 = calculate_ema(data['close'], 20)
+                    ema_50 = calculate_ema(data['close'], 50)
+                    ema_100 = calculate_ema(data['close'], 100)
+                    ema_200 = calculate_ema(data['close'], 200)
+
+
+                    # Вывод последних значений EMA
+                    last_ema_values = {
+                        'EMA 20': ema_20.iloc[-1],
+                        'EMA 50': ema_50.iloc[-1],
+                        'EMA 100': ema_100.iloc[-1],
+                        'EMA 200': ema_200.iloc[-1]
+                    }
+
+                    print(last_ema_values)
 
                     # Вывод результатов тестирования
 
@@ -2079,171 +2812,10 @@ while True:
 
                         print("JSON data has been saved.")
 
-                    bars_limit = {
-                        'in_1_hour': 30,
-                        'in_2_hour': 30,
-                        'in_4_hour': 30,
-                        'in_daily': 30
-                    }
-
-
-                    def find_divergences(data, indicator, pivot_period, max_pivot_points, max_bars, limit=None):
-                        divergences = []
-                        start_index = max(pivot_period, len(data) - limit) if limit else pivot_period
-                        for i in range(start_index, len(data) - pivot_period):
-                            pivot_low = data['low'][i - pivot_period:i + pivot_period].min()
-                            pivot_high = data['high'][i - pivot_period:i + pivot_period].max()
-                            if data['low'][i] == pivot_low or data['high'][i] == pivot_high:
-                                for j in range(1, max_pivot_points):
-                                    if i - j >= 0 and i + j < len(data):
-                                        if data[indicator][i] > data[indicator][i - j] and data['close'][i] < \
-                                                data['close'][i - j]:
-                                            divergences.append((i, 'bullish', indicator))
-                                        if data[indicator][i] < data[indicator][i - j] and data['close'][i] > \
-                                                data['close'][i - j]:
-                                            divergences.append((i, 'bearish', indicator))
-                        return divergences
-
-
-                    timeframes = [Interval.in_1_hour, Interval.in_2_hour, Interval.in_4_hour, Interval.in_daily]
-                    divergences_results = {}
-
-                    for timeframe in timeframes:
-                        timeframe_str = str(timeframe).split('.')[1]
-                        hist_data = tv.get_hist(symbol, exchange, timeframe, n_bars)
-                        data = hist_data.copy()
-                        data.index = pd.to_datetime(data.index, errors='coerce')
-
-                        limit = bars_limit.get(timeframe_str)  # Получаем лимит для текущего таймфрейма
-
-                        # Расчет индикаторов
-                        data['rsi'] = ta.rsi(data['close'], length=14)
-                        macd = ta.macd(data['close'], fast=12, slow=26, signal=9)
-                        data['macd'] = macd['MACD_12_26_9']
-                        data['macdhist'] = macd['MACDh_12_26_9']
-                        data['obv'] = ta.obv(data['close'], data['volume'])
-                        stoch = ta.stoch(data['high'], data['low'], data['close'], k=14, d=3, smooth_k=3)
-                        data['stoch_k'] = stoch['STOCHk_14_3_3']
-                        data['stoch_d'] = stoch['STOCHd_14_3_3']
-
-                        indicators = ['rsi', 'macd', 'macdhist', 'obv', 'stoch_k', 'stoch_d']
-                        all_divergences = {
-                            indicator: find_divergences(data, indicator, 5, 10, 100, limit=limit) for indicator in
-                            indicators
-                        }
-
-                        divergences_dict = {}
-                        for indicator, divergences in all_divergences.items():
-                            for index, div_type, ind in divergences:
-                                if index not in divergences_dict:
-                                    divergences_dict[index] = {'bullish': set(), 'bearish': set()}
-                                divergences_dict[index][div_type].add(ind)
-
-                        max_index = max(divergences_dict.keys(), default=None)
-
-                        if max_index is not None:
-                            last_divergences = divergences_dict[max_index]
-                            divergences_results[timeframe_str] = {
-                                'index': max_index,
-                                'divergences': {
-                                    'bullish': list(last_divergences['bullish']),
-                                    'bearish': list(last_divergences['bearish'])
-                                }
-                            }
-
-                    if symbol == "BTCUSDT":
-                        with open('divergences_per_timeframe.json', 'w', encoding='utf-8') as f:
-                            json.dump(divergences_results, f, indent=4)
-
-                    print("Дивергенции по каждому таймфрейму сохранены в 'divergences_per_timeframe.json'.")
-
-                    hist_data = tv.get_hist(symbol, exchange, Interval.in_1_hour, n_bars)
-
-                    # Plotting divergences with annotations
-                    plt.figure(figsize=(14, 7))
-                    plt.plot(data['close'], label='Close Price')
-
-                    for index, divs in divergences_dict.items():
-                        if divs['bullish']:
-                            plt.plot(data.index[index], data['close'][index], marker='^', color='g')
-                            plt.annotate(f"Bullish: {len(divs['bullish'])}\n",
-                                         xy=(data.index[index], data['close'][index]),
-                                         xytext=(data.index[index], data['close'][index] + 5),
-                                         arrowprops=dict(facecolor='green', shrink=0.05))
-
-                        if divs['bearish']:
-                            plt.plot(data.index[index], data['close'][index], marker='v', color='r')
-                            plt.annotate(f"Bearish: {len(divs['bearish'])}\n",
-                                         xy=(data.index[index], data['close'][index]),
-                                         xytext=(data.index[index], data['close'][index] - 5),
-                                         arrowprops=dict(facecolor='red', shrink=0.05))
-
-                    plt.title('Price with Divergences')
-                    plt.legend()
-                    plt.show()
-
-
-                    hist_data = tv.get_hist(symbol, exchange, Interval.in_3_minute, n_bars)
-
-
-                    def update_three_minute_json(symbol, exchange, highs_after_hh, lows_after_ll, highs, lows,
-                                                 point_vhod_short,
-                                                 point_vhod_long, point_liqvidation_short, point_liqvidation_long,
-                                                 rr_array_short,
-                                                 rr_array_long, rr_array_long_max, rr_array_short_max):
-                        file_path = 'three_minute.json'
-                        try:
-                            with open(file_path, 'r') as file:
-                                data = json.load(file)
-                                if not isinstance(data, list):
-                                    data = []
-                        except (FileNotFoundError, json.JSONDecodeError):
-                            data = []
-
-                        updated = False
-                        for entry in data:
-                            if entry['symbol'] == symbol:
-                                updated = True
-                                entry['highs_after_hh'] = [
-                                    {
-                                        'index': point,
-                                        'low': lows[point] if point < len(lows) else None,
-                                        'point_vhod': point_vhod_short.get(point),
-                                        'point_liqvidation': point_liqvidation_short.get(point),
-                                        'rr': rr_array_short.get(point),
-                                        'rr_max': rr_array_short_max.get(point),
-                                    }
-                                    for point in highs_after_hh if point < len(highs)
-                                ]
-                                entry['lows_after_ll'] = [
-                                    {
-                                        'index': point,
-                                        'high': highs[point] if point < len(highs) else None,
-                                        'point_vhod': point_vhod_long.get(point),
-                                        'point_liqvidation': point_liqvidation_long.get(point),
-                                        'rr': rr_array_long.get(point),
-                                        'rr_max': rr_array_long_max.get(point),
-                                    }
-                                    for point in lows_after_ll if point < len(lows)
-                                ]
-
-                        with open(file_path, 'w', encoding='utf-8') as file:
-                            json.dump(data, file, ensure_ascii=False, indent=4)
-
-                    update_three_minute_json(symbol, exchange, highs_after_hh, lows_after_ll, highs, lows,
-                                             point_vhod_short,
-                                             point_vhod_long, point_liqvidation_short, point_liqvidation_long,
-                                             rr_array_short,
-                                             rr_array_long, rr_array_long_max, rr_array_short_max)
-
-                    plt.ion()
-                    plt.draw()  # Обновление графика
-                    plt.pause(0.1)  # Пауза, важна для обновления графики
-                    plt.close()  # Закрытие текущей фигуры
                     time.sleep(10)
 
                     del hist_data, timestamps, highs, lows, opens, closes, volume, current_price
-                    del rejection_blocks, open_figures, fig, ax
+                    del open_figures, fig, ax
 
                     # Force garbage collection
                     gc.collect()
